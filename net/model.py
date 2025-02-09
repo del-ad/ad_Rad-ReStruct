@@ -48,20 +48,97 @@ def create_pos_encoding(args):
     return pos_img
 
 
+# class MyBertEmbeddings(nn.Module):
+#     """Construct the embeddings from word, position and token_type embeddings."""
+#
+#     def __init__(self, config, args):
+#         super().__init__()
+#         self.args = args
+#         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
+#         self.position_embeddings = nn.Embedding(config.max_position_embeddings,
+#                                                 config.hidden_size // 2)  # other half is reserved for spatial image embeddings
+#         if args.progressive:
+#             self.token_type_embeddings = nn.Embedding(4, config.hidden_size)  # image, history Q, history A, current question
+#         else:
+#             self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+#         self.img_pos_embeddings = create_pos_encoding(self.args)
+#
+#         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+#         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
+#         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
+#         self.register_buffer(
+#             "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
+#         )
+#
+#     def forward(
+#             self,
+#             input_ids: Optional[torch.LongTensor] = None,
+#             token_type_ids: Optional[torch.LongTensor] = None,
+#             position_ids: Optional[torch.LongTensor] = None,
+#             inputs_embeds: Optional[torch.FloatTensor] = None,
+#             past_key_values_length: int = 0,
+#
+#     ) -> torch.Tensor:
+#         if input_ids is not None:
+#             input_shape = input_ids.size()
+#         else:
+#             input_shape = inputs_embeds.size()[:-1]
+#
+#         seq_length = input_shape[1]
+#
+#         if position_ids is None:
+#             position_ids = self.position_ids[:, past_key_values_length: seq_length + past_key_values_length]
+#
+#         # Setting the token_type_ids to the registered buffer in constructor where it is all zeros, which usually occurs
+#         # when its auto-generated, registered buffer helps users when tracing the model without passing token_type_ids, solves
+#         # issue #5664
+#         if token_type_ids is None:
+#             if hasattr(self, "token_type_ids"):
+#                 buffered_token_type_ids = self.token_type_ids[:, :seq_length]
+#                 buffered_token_type_ids_expanded = buffered_token_type_ids.expand(input_shape[0], seq_length)
+#                 token_type_ids = buffered_token_type_ids_expanded
+#             else:
+#                 token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
+#
+#         if inputs_embeds is None:
+#             inputs_embeds = self.word_embeddings(input_ids)
+#         token_type_embeddings = self.token_type_embeddings(token_type_ids)
+#
+#         embeddings = inputs_embeds + token_type_embeddings
+#         if self.position_embedding_type == "absolute":
+#             position_embeddings = self.position_embeddings(position_ids)
+#             position_embeddings = torch.cat((self.img_pos_embeddings.to(position_embeddings.device), position_embeddings),
+#                                             dim=-1)  # add image position embeddings and sequence position embeddings
+#             embeddings += position_embeddings
+#         embeddings = self.LayerNorm(embeddings)
+#         embeddings = self.dropout(embeddings)
+#         return embeddings
+
 class MyBertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config, args):
         super().__init__()
         self.args = args
+        # just a 1x768 tensor of 0s. What for ?
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
+        # a 458x384 tensor, position embeddings only of words ? 458 = possible positions in the sequence
         self.position_embeddings = nn.Embedding(config.max_position_embeddings,
                                                 config.hidden_size // 2)  # other half is reserved for spatial image embeddings
         if args.progressive:
-            self.token_type_embeddings = nn.Embedding(4, config.hidden_size)  # image, history Q, history A, current question
+            # 4x768 tensor for the 4 types of tokens - image, history Q, history A, current question
+            # try with sep and pad tokens also (7 total) 0 = CLS, 1 = SEP, 2 = PAD,
+            # 3 = img, 4 historyq , 5 = historya, 6 = currentq
+            self.token_type_embeddings = nn.Embedding(7, config.hidden_size)
+            #self.token_type_embeddings = nn.Embedding(4, config.hidden_size)  # image, history Q, history A, current question
         else:
+            # just 2 tokens if not progressive ? What's that
             self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
         self.img_pos_embeddings = create_pos_encoding(self.args)
+        #added
+        # 1x458x384 tensor - image embeddings
+        shape = self.img_pos_embeddings.shape
 
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -159,29 +236,66 @@ class Model(nn.Module):
                 # nn.BatchNorm1d(256),
                 nn.Linear(256, args.num_classes))
 
+    # def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, mode='train'):
+    #
+    #     image_features = self.image_encoder(img, mode=mode)
+    #     text_features = self.question_encoder(input_ids, q_attn_mask)
+    #     cls_tokens = text_features[:, 0:1]
+    #
+    #     h = torch.cat((cls_tokens, image_features, text_features[:, 1:]), dim=1)[:, :self.args.max_position_embeddings]
+    #     if self.args.progressive:
+    #         assert token_type_ids_q is not None
+    #         token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+    #         token_type_ids[:, 0] = 1  # cls token
+    #         token_type_ids[:, 1:image_features.size(1) + 1] = 0  # image features
+    #         token_type_ids[:, image_features.size(1) + 1:] = token_type_ids_q[:, 1:self.args.max_position_embeddings - (
+    #             image_features.size(1))]  # drop CLS token_type_id as added before already and cut unnecessary padding
+    #     else:
+    #         token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+    #         token_type_ids[:, 0] = 1
+    #         token_type_ids[:, 1:image_features.size(1) + 1] = 0
+    #         token_type_ids[:, image_features.size(1) + 1:] = 1
+    #
+    #     out = self.fusion(inputs_embeds=h, attention_mask=attn_mask, token_type_ids=token_type_ids, output_attentions=True)
+    #     h = out['last_hidden_state']
+    #     attentions = out['attentions'][0]
+    #     logits = self.classifier(h.mean(dim=1))
+    #
+    #     return logits, attentions
+
     def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, mode='train'):
 
         image_features = self.image_encoder(img, mode=mode)
+        decoded_batch_questions = []
+        for batch_element in input_ids:
+            decoded_batch_questions.append(self.tokenizer.decode(batch_element))
         text_features = self.question_encoder(input_ids, q_attn_mask)
         cls_tokens = text_features[:, 0:1]
 
         h = torch.cat((cls_tokens, image_features, text_features[:, 1:]), dim=1)[:, :self.args.max_position_embeddings]
+        # Essentially combines the image and text token type ids in a single tensor
+        # first 196 (num of img tokens) tokens are 0
+        # if progressive, rest are set according the the token_type_ids_q
+        # if not rest are set to 1
         if self.args.progressive:
             assert token_type_ids_q is not None
             token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
-            token_type_ids[:, 0] = 1  # cls token
-            token_type_ids[:, 1:image_features.size(1) + 1] = 0  # image features
+            token_type_ids[:, 0] = 0  # cls token
+            img_features_size = image_features.size(1)
+            img_features_b0 = image_features[0]
+            token_type_ids[:, 1:image_features.size(1) + 1] = 3  # image features
             token_type_ids[:, image_features.size(1) + 1:] = token_type_ids_q[:, 1:self.args.max_position_embeddings - (
                 image_features.size(1))]  # drop CLS token_type_id as added before already and cut unnecessary padding
         else:
             token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
-            token_type_ids[:, 0] = 1
-            token_type_ids[:, 1:image_features.size(1) + 1] = 0
-            token_type_ids[:, image_features.size(1) + 1:] = 1
+            token_type_ids[:, 0] = 0
+            token_type_ids[:, 1:image_features.size(1) + 1] = 3
+            token_type_ids[:, image_features.size(1) + 1:] = 2
 
         out = self.fusion(inputs_embeds=h, attention_mask=attn_mask, token_type_ids=token_type_ids, output_attentions=True)
         h = out['last_hidden_state']
         attentions = out['attentions'][0]
+        #mean1stdim = h.mean(dim=1) # expecting 2x1x768
         logits = self.classifier(h.mean(dim=1))
 
         return logits, attentions
@@ -323,15 +437,15 @@ class ModelWrapper(pl.LightningModule):
             self.val_infos.append(info)
 
         if "vqarad" in self.args.data_dir:
-            loss = self.loss_fn(logits[target != -1], target[target != -1])
+            val_loss = self.loss_fn(logits[target != -1], target[target != -1])
         else:
-            loss = self.loss_fn(logits, target.squeeze(0))
+            val_loss = self.loss_fn(logits, target.squeeze(0))
             # only use loss of occuring classes
             if "radrestruct" in self.args.data_dir:
-                loss = self.get_masked_loss(loss, mask, target, None)
-        self.log('Loss/val', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+                val_loss = self.get_masked_loss(val_loss, mask, target, None)
+        self.log('Loss/val', val_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        return loss
+        return val_loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.lr)

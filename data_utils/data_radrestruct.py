@@ -12,6 +12,73 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 
 
+# def encode_text_progressive(question, history, tokenizer, mode, args):
+#     encoded_history = []
+#     token_type_ids = []
+#
+#     if mode == "train" and args.aug_history:  # augmentation: random dropping of lvl 1 and lvl 3 history questions, random order of lvl 3 questions
+#         if len(history) > 0:
+#             keep_num = int(torch.randint(0, len(history) + 1, (1,)))  # drops between 0 and len(history) elements
+#             # randomly sample keep_num elements from history
+#             keep_idxs = random.sample(range(len(history)), keep_num)
+#             # always keep level 2 question as it shows the current position in the report
+#             if len(history) > 1 and 1 not in keep_idxs:
+#                 keep_idxs.append(1)
+#
+#             keep_idxs = sorted(keep_idxs)
+#             history = [history[i] for i in keep_idxs]
+#
+#             # randomly shuffle level 3 questions
+#             if len(history) > 2:
+#                 # find idx of question id 1 in keep_idxs
+#                 lvl2_idx = keep_idxs.index(1)
+#
+#                 # shuffle all after lvl2_idx
+#                 copy = history[lvl2_idx + 1:]
+#                 random.shuffle(copy)
+#                 history[lvl2_idx + 1:] = copy
+#
+#     if args.progressive:  # else leave history empty
+#         for elem in history:
+#             encoded_question = tokenizer.encode(elem[0])[1:-1]
+#             encoded_answer = tokenizer.encode(', '.join(elem[1]))[1:-1]  # list of all answers to the question
+#             encoded_history.append(encoded_question + [tokenizer.sep_token_id] + encoded_answer + [tokenizer.sep_token_id])
+#             token_type_ids.append([2] * (len(encoded_question) + 1) + [3] * (len(encoded_answer) + 1))
+#
+#     # add current question
+#     encoded_question = tokenizer.encode(question)[1:-1]
+#     encoded_history.append(encoded_question)
+#     token_type_ids.append([1] * len(encoded_question))  # current question is always type 1
+#
+#     # flatten
+#     encoded_history = [item for sublist in encoded_history for item in sublist]
+#     token_type_ids = [item for sublist in token_type_ids for item in sublist]
+#
+#     # in gt this is never exceeded
+#     # for now just truncate history
+#     if len(encoded_history) > args.num_question_tokens:
+#         print(f"Truncating history: {question}, {history}")
+#         encoded_history = encoded_history[-args.num_question_tokens:]
+#         token_type_ids = token_type_ids[-args.num_question_tokens:]
+#
+#     assert len(encoded_history) <= args.num_question_tokens
+#
+#     tokens = [tokenizer.cls_token_id] + [tokenizer.sep_token_id] + encoded_history + [tokenizer.sep_token_id]
+#     token_type_ids = [1] + [1] + token_type_ids + [1]
+#     q_attn_mask = [1] * len(tokens)
+#     n_pad = args.max_position_embeddings - len(tokens)
+#     attn_mask = (args.num_image_tokens + len(tokens)) * [1] + (args.max_position_embeddings - len(tokens) - args.num_image_tokens) * [0]
+#     q_attn_mask.extend([0] * n_pad)
+#     tokens.extend([0] * n_pad)
+#     token_type_ids.extend([0] * n_pad)
+#
+#     assert len(tokens) == args.max_position_embeddings
+#     assert len(q_attn_mask) == args.max_position_embeddings
+#     assert len(attn_mask) == args.max_position_embeddings
+#     assert len(token_type_ids) == args.max_position_embeddings
+#
+#     return tokens, q_attn_mask, attn_mask, torch.tensor(token_type_ids, dtype=torch.long)
+
 def encode_text_progressive(question, history, tokenizer, mode, args):
     encoded_history = []
     token_type_ids = []
@@ -39,16 +106,32 @@ def encode_text_progressive(question, history, tokenizer, mode, args):
                 history[lvl2_idx + 1:] = copy
 
     if args.progressive:  # else leave history empty
+        # try with sep and pad tokens also (6 total) 0 = CLS, 1 = sep, 2 = pad, 3 = img, 4 = historyq ,
+        # 5 = historya, 6 = currentq
         for elem in history:
+            # with no beginning and end tokens of the question (special tokens)?
             encoded_question = tokenizer.encode(elem[0])[1:-1]
+            # sanity check to see if above comment is correct
+            #encoded_question_w_specials = tokenizer.encode(elem[0])
+            # just to see what's going on - COMMENT out when done inspecting
+            #dec_q_orig = tokenizer.decode(encoded_question)
+            #dec_q_mine = tokenizer.decode(encoded_question_w_specials)
+
+            # what happens when there are multiple answers ? (len(elem[1]>1))
             encoded_answer = tokenizer.encode(', '.join(elem[1]))[1:-1]  # list of all answers to the question
-            encoded_history.append(encoded_question + [tokenizer.sep_token_id] + encoded_answer + [tokenizer.sep_token_id])
-            token_type_ids.append([2] * (len(encoded_question) + 1) + [3] * (len(encoded_answer) + 1))
+            # COMMENT out when done
+            #ncoded_answer_w_specials = tokenizer.encode(', '.join(elem[1]))  # list of all answers to the question
+            #dec_a_orig = tokenizer.decode(encoded_answer)
+            #dec_a_mine = tokenizer.decode(ncoded_answer_w_specials)
+
+            encoded_history.append(
+                encoded_question + [tokenizer.sep_token_id] + encoded_answer + [tokenizer.sep_token_id])
+            token_type_ids.append([4] * (len(encoded_question)) + [1] + [5] * (len(encoded_answer)) + [1])
 
     # add current question
     encoded_question = tokenizer.encode(question)[1:-1]
     encoded_history.append(encoded_question)
-    token_type_ids.append([1] * len(encoded_question))  # current question is always type 1
+    token_type_ids.append([6] * len(encoded_question))  # current question is always type 6
 
     # flatten
     encoded_history = [item for sublist in encoded_history for item in sublist]
@@ -64,13 +147,20 @@ def encode_text_progressive(question, history, tokenizer, mode, args):
     assert len(encoded_history) <= args.num_question_tokens
 
     tokens = [tokenizer.cls_token_id] + [tokenizer.sep_token_id] + encoded_history + [tokenizer.sep_token_id]
-    token_type_ids = [1] + [1] + token_type_ids + [1]
+    # Comment out when done
+    tokens_text = tokenizer.decode(tokens)
+    # first [1] corresponds to [CLS] token, second to a [SEP] token, look line 81 above
+    # in final token_type_id
+    token_type_ids = [0] + [1] + token_type_ids + [1]
     q_attn_mask = [1] * len(tokens)
     n_pad = args.max_position_embeddings - len(tokens)
-    attn_mask = (args.num_image_tokens + len(tokens)) * [1] + (args.max_position_embeddings - len(tokens) - args.num_image_tokens) * [0]
+    attn_mask = (args.num_image_tokens + len(tokens)) * [1] + (
+                args.max_position_embeddings - len(tokens) - args.num_image_tokens) * [0]
     q_attn_mask.extend([0] * n_pad)
-    tokens.extend([0] * n_pad)
-    token_type_ids.extend([0] * n_pad)
+    # Padds with 0s - 0 is actually the <CLS> token, shouldn't we pad with PAD token instead?
+    # tokens.extend([0] * n_pad)
+    tokens.extend([tokenizer.pad_token_id] * n_pad)
+    token_type_ids.extend([2] * n_pad)
 
     assert len(tokens) == args.max_position_embeddings
     assert len(q_attn_mask) == args.max_position_embeddings
@@ -78,7 +168,6 @@ def encode_text_progressive(question, history, tokenizer, mode, args):
     assert len(token_type_ids) == args.max_position_embeddings
 
     return tokens, q_attn_mask, attn_mask, torch.tensor(token_type_ids, dtype=torch.long)
-
 
 def encode_answer(answer, answer_options):
     # convert to multi-hot encoding
