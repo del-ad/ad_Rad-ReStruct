@@ -16,6 +16,8 @@ from evaluation.evaluator_radrestruct import AutoregressiveEvaluator
 from evaluation.predict_autoregressive_VQA_radrestruct import predict_autoregressive_VQA
 from net.image_encoding import ImageEncoderEfficientNet
 from net.question_encoding import QuestionEncoderBERT
+#
+from transformers import AutoTokenizer
 
 
 # implementation of 2D positional encoding from https://github.com/gaopengcuhk/Stable-Pix2Seq
@@ -219,7 +221,7 @@ class Model(nn.Module):
 
         self.image_encoder = ImageEncoderEfficientNet(args)
         self.question_encoder = QuestionEncoderBERT(args)
-
+        self.tokenizer = AutoTokenizer.from_pretrained(args.bert_model, trust_remote_code=True)
         self.fusion_config = BertConfig(vocab_size=1, hidden_size=args.hidden_size, num_hidden_layers=args.n_layers,
                                         num_attention_heads=args.heads, intermediate_size=args.hidden_size * 4,
                                         max_position_embeddings=args.max_position_embeddings)
@@ -266,9 +268,10 @@ class Model(nn.Module):
     def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, mode='train'):
 
         image_features = self.image_encoder(img, mode=mode)
-        decoded_batch_questions = []
-        for batch_element in input_ids:
-            decoded_batch_questions.append(self.tokenizer.decode(batch_element))
+        # For checking batch encoded inputs
+        # decoded_batch_questions = []
+        # for batch_element in input_ids:
+        #     decoded_batch_questions.append(self.tokenizer.decode(batch_element))
         text_features = self.question_encoder(input_ids, q_attn_mask)
         cls_tokens = text_features[:, 0:1]
 
