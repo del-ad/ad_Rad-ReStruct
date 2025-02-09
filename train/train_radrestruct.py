@@ -16,6 +16,15 @@ from net.model import ModelWrapper
 
 warnings.simplefilter("ignore", UserWarning)
 
+
+# handle info dicts in collate_fn
+def collate_dict_fn(batch, *, collate_fn_map):
+    return batch
+
+def custom_collate(batch):
+    default_collate_fn_map.update({dict: collate_dict_fn})
+    return collate(batch, collate_fn_map=default_collate_fn_map)
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Finetune on RadReStruct")
@@ -104,12 +113,12 @@ if __name__ == '__main__':
     valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     # handle info dicts in collate_fn
-    def collate_dict_fn(batch, *, collate_fn_map):
-        return batch
-
-    def custom_collate(batch):
-        default_collate_fn_map.update({dict: collate_dict_fn})
-        return collate(batch, collate_fn_map=default_collate_fn_map)
+    # def collate_dict_fn(batch, *, collate_fn_map):
+    #     return batch
+    #
+    # def custom_collate(batch):
+    #     default_collate_fn_map.update({dict: collate_dict_fn})
+    #     return collate(batch, collate_fn_map=default_collate_fn_map)
 
     trainloader = DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
     valloader = DataLoader(valdataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
