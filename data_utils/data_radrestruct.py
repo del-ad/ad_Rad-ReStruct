@@ -259,7 +259,6 @@ class RadReStruct(Dataset):
                 self.samples.append((qa_pair, img, sample_id))
 
         self.mode = mode
-
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
 
@@ -269,7 +268,10 @@ class RadReStruct(Dataset):
     def __getitem__(self, idx):
         qa_sample, img_name, sample_id = self.samples[idx]
 
-        img_path = Path('data/radrestruct/images') / f'{img_name}.png'
+        # data_dir/images - c/user/project/data/images
+        images_path = os.path.join(self.args.data_dir, 'images')
+
+        img_path = Path(images_path) / f'{img_name}.png'
         img = Image.open(img_path)
         if self.tfm:
             img = self.tfm(img)
