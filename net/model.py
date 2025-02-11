@@ -20,6 +20,15 @@ from net.question_encoding import QuestionEncoderBERT
 from transformers import AutoTokenizer
 
 
+# handle info dicts in collate_fn
+def collate_dict_fn(batch, *, collate_fn_map):
+    return batch
+
+
+def custom_collate(batch):
+    default_collate_fn_map.update({dict: collate_dict_fn})
+    return collate(batch, collate_fn_map=default_collate_fn_map)
+
 # implementation of 2D positional encoding from https://github.com/gaopengcuhk/Stable-Pix2Seq
 def create_pos_encoding(args):
     temperature = 10000
@@ -239,6 +248,7 @@ class Model(nn.Module):
                 # nn.BatchNorm1d(256),
                 nn.Linear(256, args.num_classes))
 
+    # Original
     # def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, mode='train'):
     #
     #     image_features = self.image_encoder(img, mode=mode)
