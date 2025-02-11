@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import warnings
+import wandb
 
 import pytorch_lightning as pl
 import torch
@@ -9,6 +10,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from pytorch_lightning.loggers import WandbLogger
 
 from data_utils.data_vqarad import _load_dataset, create_image_to_question_dict, VQARad
 from net.model import ModelWrapper
@@ -114,8 +116,8 @@ if __name__ == '__main__':
     trainloader = DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     valloader = DataLoader(valdataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    logger = pl.loggers.TensorBoardLogger('runs', name=args.run_name, version=0)
-
+    #logger = pl.loggers.TensorBoardLogger('runs', name=args.run_name, version=0)
+    logger = WandbLogger(project='train_vqarad', name=args.run_name, config=args)
     checkpoint_callback = ModelCheckpoint(monitor='Acc/val_clean', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{Acc/val_clean:.2f}',
                                               mode='max', every_n_epochs=1, save_last=True)
 

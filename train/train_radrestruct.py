@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import warnings
+import wandb
 
 import pytorch_lightning as pl
 import torch
@@ -10,6 +11,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 from torch.utils.data._utils.collate import collate, default_collate_fn_map
 from torchvision import transforms
+from pytorch_lightning.loggers import WandbLogger
 
 from data_utils.data_radrestruct import RadReStruct
 from net.model import ModelWrapper
@@ -123,8 +125,8 @@ if __name__ == '__main__':
     trainloader = DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
     valloader = DataLoader(valdataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
 
-    logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
-
+    #logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
+    logger = WandbLogger(project='train_radrestruct', name=args.run_name, config=args)
     checkpoint_callback = ModelCheckpoint(monitor='F1/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{F1/val:.2f}',
                                           mode='max', every_n_epochs=1, save_last=True)
 

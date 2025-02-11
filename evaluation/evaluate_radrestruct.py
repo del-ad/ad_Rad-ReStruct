@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import warnings
+import wandb
 
 import numpy as np
 import pytorch_lightning as pl
@@ -9,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.data._utils.collate import collate, default_collate_fn_map
 from torchvision import transforms
+from pytorch_lightning.loggers import WandbLogger
 
 from data_utils.data_radrestruct import RadReStructEval, get_targets_for_split
 from evaluation.evaluator_radrestruct import AutoregressiveEvaluator
@@ -113,8 +115,8 @@ if __name__ == '__main__':
 
     valloader = DataLoader(valdataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate)
 
-    logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
-
+    #logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
+    logger = WandbLogger(project='evaluate_radrestruct', name=args.run_name, config=args)
     preds = predict_autoregressive_VQA(model, valloader, args)
 
     evaluator = AutoregressiveEvaluator()

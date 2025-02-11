@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import warnings
+import wandb
 
 import pytorch_lightning as pl
 import torch
@@ -11,6 +12,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+from pytorch_lightning.loggers import WandbLogger
 
 from data_utils.data_vqarad import _load_dataset
 from data_utils.data_vqarad import create_image_to_question_dict, VQARadEval, encode_text_progressive
@@ -104,7 +106,8 @@ if __name__ == '__main__':
 
     valloader = DataLoader(autoregr_valdataset, batch_size=1, shuffle=False, num_workers=args.num_workers)
 
-    logger = pl.loggers.TensorBoardLogger('runs', name=args.run_name, version=0)
+    #logger = pl.loggers.TensorBoardLogger('runs', name=args.run_name, version=0)
+    logger = WandbLogger(project='evaluate_autoregressive_vqarad', name=args.run_name, config=args)
 
     trainer = Trainer(
         accelerator="gpu" if torch.cuda.is_available() else None,
