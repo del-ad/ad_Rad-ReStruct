@@ -330,12 +330,12 @@ class ModelWrapper(pl.LightningModule):
             self.val_ar_evaluator_vqa = AutoregressiveEvaluator()
 
             # handle info dicts in collate_fn
-            def collate_dict_fn(batch, *, collate_fn_map):
-                return batch
-
-            def custom_collate(batch):
-                default_collate_fn_map.update({dict: collate_dict_fn})
-                return collate(batch, collate_fn_map=default_collate_fn_map)
+            # def collate_dict_fn(batch, *, collate_fn_map):
+            #     return batch
+            #
+            # def custom_collate(batch):
+            #     default_collate_fn_map.update({dict: collate_dict_fn})
+            #     return collate(batch, collate_fn_map=default_collate_fn_map)
 
             img_tfm = self.model.image_encoder.img_tfm
             norm_tfm = self.model.image_encoder.norm_tfm
