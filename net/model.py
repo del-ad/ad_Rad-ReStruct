@@ -475,18 +475,18 @@ class ModelWrapper(pl.LightningModule):
             closed_acc = (preds[answer_types == 0] == targets[answer_types == 0]).mean() * 100.
             open_acc = (preds[answer_types == 1] == targets[answer_types == 1]).mean() * 100.
 
-            self.logger.experiment.add_scalar('Acc/train', total_acc, self.current_epoch)
-            self.logger.experiment.add_scalar('ClosedAcc/train', closed_acc, self.current_epoch)
-            self.logger.experiment.add_scalar('OpenAcc/train', open_acc, self.current_epoch)
+            self.logger.log_metrics({'Acc/train': total_acc}, step=self.current_epoch)
+            self.logger.log_metrics({'ClosedAcc/train': closed_acc}, step=self.current_epoch)
+            self.logger.log_metrics({'OpenAcc/train': open_acc}, step=self.current_epoch)
 
         else:
             if self.current_epoch % 4 == 0:
                 # autoregressive evaluation on fixed sub_set of 100 train reports
                 preds = predict_autoregressive_VQA(self, self.ar_train_loader_vqa, self.args)
                 acc, acc_report, f1, _, _, _ = self.train_ar_evaluator_vqa.evaluate(preds, self.test_data_train)
-                self.logger.experiment.add_scalar('Acc/train', acc, self.current_epoch)
-                self.logger.experiment.add_scalar('Acc_Report/train', acc_report, self.current_epoch)
-                self.logger.experiment.add_scalar('F1/train', f1, self.current_epoch)
+                self.logger.log_metrics({'Acc/train': acc}, step=self.current_epoch)
+                self.logger.log_metrics({'Acc_Report/train': acc_report}, step=self.current_epoch)
+                self.logger.log_metrics({'F1/train': f1}, step=self.current_epoch)
 
         self.train_preds = []
         self.train_targets = []
@@ -506,9 +506,9 @@ class ModelWrapper(pl.LightningModule):
             closed_acc = (preds[answer_types == 0] == targets[answer_types == 0]).mean() * 100.
             open_acc = (preds[answer_types == 1] == targets[answer_types == 1]).mean() * 100.
 
-            self.logger.experiment.add_scalar('Acc/val', total_acc, self.current_epoch)
-            self.logger.experiment.add_scalar('ClosedAcc/val', closed_acc, self.current_epoch)
-            self.logger.experiment.add_scalar('OpenAcc/val', open_acc, self.current_epoch)
+            self.logger.log_metrics({'Acc/val': total_acc}, step=self.current_epoch)
+            self.logger.log_metrics({'ClosedAcc/val': closed_acc}, step=self.current_epoch)
+            self.logger.log_metrics({'OpenAcc/val': open_acc}, step=self.current_epoch)
 
             # clean accuracies without samples not occuring in the training set
             total_acc1 = (preds[targets != -1] == targets[targets != -1]).mean() * 100.
@@ -520,18 +520,18 @@ class ModelWrapper(pl.LightningModule):
             # log
             self.log('Acc/val_clean', total_acc1, on_step=False, on_epoch=True, prog_bar=True, logger=False)  # for saving
 
-            self.logger.experiment.add_scalar('Acc/val_clean', total_acc1, self.current_epoch)
-            self.logger.experiment.add_scalar('ClosedAcc/val_clean', closed_acc1, self.current_epoch)
-            self.logger.experiment.add_scalar('OpenAcc/val_clean', open_acc1, self.current_epoch)
+            self.logger.log_metrics({'Acc/val_clean': total_acc1}, step=self.current_epoch)
+            self.logger.log_metrics({'ClosedAcc/val_clean': closed_acc1}, step=self.current_epoch)
+            self.logger.log_metrics({'OpenAcc/val_clean': open_acc1}, step=self.current_epoch)
 
         else:
             if self.current_epoch % 4 == 0:
                 # autoregressive evaluation on fixed sub_set of 100 train reports
                 preds = predict_autoregressive_VQA(self, self.ar_val_loader_vqa, self.args)
                 acc, acc_report, f1, _, _, _ = self.val_ar_evaluator_vqa.evaluate(preds, self.test_data_val)
-                self.logger.experiment.add_scalar('Acc/val', acc, self.current_epoch)
-                self.logger.experiment.add_scalar('Acc_Report/val', acc_report, self.current_epoch)
-                self.logger.experiment.add_scalar('F1/val', f1, self.current_epoch)
+                self.logger.log_metrics({'Acc/val': acc}, step=self.current_epoch)
+                self.logger.log_metrics({'Acc_Report/val': acc_report}, step=self.current_epoch)
+                self.logger.log_metrics({'F1/val': f1}, step=self.current_epoch)
                 self.log('F1/val', f1, on_step=False, on_epoch=True, prog_bar=True, logger=False)  # for saving
             else:
                 self.log('F1/val', 0., on_step=False, on_epoch=True, prog_bar=True, logger=False)  # ignore these epochs in ModelCheckpoint
