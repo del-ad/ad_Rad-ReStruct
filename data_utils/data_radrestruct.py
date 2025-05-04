@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 from pydash import at
+#from pydash import at
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 
@@ -280,6 +281,8 @@ class RadReStruct(Dataset):
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
 
+        self.samples = self.samples[:1] # For debugging of validation, comment out after
+
     def __len__(self):
         return len(self.samples)
 
@@ -356,6 +359,8 @@ class RadReStructEval(Dataset):
         self.mode = mode
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
+
+        self.samples = self.samples[:1] # Only for debugging, delete afterwards
 
     def __len__(self):
         return len(self.samples)
