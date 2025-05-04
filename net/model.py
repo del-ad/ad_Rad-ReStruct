@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from typing import Optional
 
 import pytorch_lightning as pl
@@ -14,6 +15,7 @@ from transformers.models.bert.modeling_bert import BertEncoder, BertPooler
 from data_utils.data_radrestruct import RadReStructEval, get_targets_for_split
 from evaluation.evaluator_radrestruct import AutoregressiveEvaluator
 from evaluation.predict_autoregressive_VQA_radrestruct import predict_autoregressive_VQA
+from knowledge_base.knowledge_base_loader import KnowledgeBase
 from net.image_encoding import ImageEncoderEfficientNet
 from net.question_encoding import QuestionEncoderBERT
 #
@@ -231,6 +233,10 @@ class Model(nn.Module):
 
         self.image_encoder = ImageEncoderEfficientNet(args)
         self.question_encoder = QuestionEncoderBERT(args)
+
+        self.knowledge_base = KnowledgeBase(
+                "E:\\Development\\radrestruct_knowledge_base\\kb\\KNOWLEDGE_BASE_index.json")
+
         self.tokenizer = AutoTokenizer.from_pretrained(args.bert_model, trust_remote_code=True)
         self.fusion_config = BertConfig(vocab_size=1, hidden_size=args.hidden_size, num_hidden_layers=args.n_layers,
                                         num_attention_heads=args.heads, intermediate_size=args.hidden_size * 4,
@@ -249,11 +255,15 @@ class Model(nn.Module):
                 nn.Linear(256, args.num_classes))
 
     # Original
-    def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, mode='train'):
+    def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
 
-        image_features = self.image_encoder(img, mode=mode)
+        image_features, global_image_embedding = self.image_encoder(img, mode=mode)
         text_features = self.question_encoder(input_ids, q_attn_mask)
         cls_tokens = text_features[:, 0:1]
+        print(batch_metadata)
+        path = batch_metadata['path']
+        options = batch_metadata['options']
+        knowledge_examples = self.knowledge_base.get_images_for_path(path,options)
 
         h = torch.cat((cls_tokens, image_features, text_features[:, 1:]), dim=1)[:, :self.args.max_position_embeddings]
         if self.args.progressive:
@@ -386,8 +396,8 @@ class ModelWrapper(pl.LightningModule):
 
         return masked_loss
 
-    def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q, mode='train'):
-        return self.model(img, input_ids, q_attn_mask, attn_mask, token_type_ids_q, mode=mode)
+    def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q, batch_metadata, mode='train'):
+        return self.model(img, input_ids, q_attn_mask, attn_mask, token_type_ids_q, batch_metadata, mode=mode)
 
     def training_step(self, batch, batch_idx, dataset="vqarad"):
         if "vqarad" in self.args.data_dir:
@@ -398,8 +408,10 @@ class ModelWrapper(pl.LightningModule):
         question_token = question_token.squeeze(1)
         attn_mask = attn_mask.squeeze(1)
         q_attention_mask = q_attention_mask.squeeze(1)
+        ## metadata such as path for the given batch - returned from getitem as info
+        batch_info = batch[6][0]
 
-        out, _ = self(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, mode='train')
+        out, _ = self(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, batch_info, mode='train')
 
         logits = out
         if "vqarad" in self.args.data_dir:

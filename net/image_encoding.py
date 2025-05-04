@@ -33,7 +33,14 @@ class ImageEncoderEfficientNet(nn.Module):
         x = self.rescale_conv(x)
         x = self.rescale_pool(x)
 
-        return x.flatten(2).permute(0, 2, 1)
+        # Global embedding (average over spatial dimensions)
+        global_embedding = x.mean(dim=[2, 3])  # (B, hidden_size)
+        global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
+
+        # Token embedding (flatten spatial dimensions into sequence)
+        image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
+
+        return image_tokens, global_embedding
 
 
 def adapt_position_encoding(model, patch_size=32, after=384, suffix='visual.positional_embedding'):

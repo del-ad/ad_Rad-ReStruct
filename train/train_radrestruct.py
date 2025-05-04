@@ -111,6 +111,10 @@ if __name__ == '__main__':
     train_tfm = transforms.Compose([img_tfm, aug_tfm, norm_tfm]) if norm_tfm is not None else transforms.Compose([img_tfm, aug_tfm])
     test_tfm = transforms.Compose([img_tfm, norm_tfm]) if norm_tfm is not None else img_tfm
 
+    ## SET THE APPROPRIATE TRANSFORMS FOR THE KNOWLEDGE BASE
+    model.model.knowledge_base.train_transform = train_tfm
+    model.model.knowledge_base.test_transform = test_tfm
+
     traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
     valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
