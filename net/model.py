@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import pytorch_lightning as pl
 import torch
@@ -234,8 +234,7 @@ class Model(nn.Module):
         self.image_encoder = ImageEncoderEfficientNet(args)
         self.question_encoder = QuestionEncoderBERT(args)
 
-        self.knowledge_base = KnowledgeBase(
-                "E:\\Development\\radrestruct_knowledge_base\\kb\\KNOWLEDGE_BASE_index.json")
+        self.knowledge_base = KnowledgeBase(args.kb_dir)
 
         self.tokenizer = AutoTokenizer.from_pretrained(args.bert_model, trust_remote_code=True)
         self.fusion_config = BertConfig(vocab_size=1, hidden_size=args.hidden_size, num_hidden_layers=args.n_layers,
@@ -254,25 +253,86 @@ class Model(nn.Module):
                 # nn.BatchNorm1d(256),
                 nn.Linear(256, args.num_classes))
 
+    # def create_token_type_ids(self, img_features: torch.Tensor, positive_examples: List[torch.Tensor], negative_examples: List[torch.Tensor], token_type_ids_q: torch.Tensor) -> torch.Tensor:
+        
+    #     assert token_type_ids_q is not None
+    #     token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+    #     token_type_ids[:, 0] = 1  # cls token
+    #     num_image_features = img_features.size(1)
+    #     token_type_ids[:, 1 : 1 + num_image_features] = 2  # image features - 197 positions 1,197 incl
+    #     ### positive example tokentype id
+    #     positive_start = 1 + num_image_features + 1
+    #     token_type_ids[:, positive_start : positive_start + num_pos_examples] = 3  # positive KB examples
+    #     ## negative examples tokentype id
+    #     negative_start = positive_start + num_pos_examples + 1
+    #     token_type_ids[:, negative_start : negative_start + num_neg_examples] = 4  # negative KB examples
+
+    #     ## add the text type ids
+    #     start = 1 + num_image_features + num_pos_examples + num_neg_examples
+    #     remaining = self.args.max_position_embeddings - start  # = 458 - num_image_features + num_pos_examples + num_neg_examples (458 - 197+1+1)
+        
+        
+        
+    #     return None
+
     # Original
     def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
 
+        ## global image embedding serves as positive example in sanity check
         image_features, global_image_embedding = self.image_encoder(img, mode=mode)
         text_features = self.question_encoder(input_ids, q_attn_mask)
         cls_tokens = text_features[:, 0:1]
         print(batch_metadata)
         path = batch_metadata['path']
         options = batch_metadata['options']
-        knowledge_examples = self.knowledge_base.get_images_for_path(path,options)
+        positive_option = batch_metadata['positive_option']
+        knowledge_positive_examples, knowledge_negative_examples  = self.knowledge_base.get_images_for_path(path,options, positive_option)
+        pos_examples_global_embeddings: List[torch.Tensor] = []
+        neg_examples_global_embeddings: List[torch.Tensor] = []
+        
+        #tokens = [tokenizer.cls_token_id] + [tokenizer.sep_token_id] + encoded_history + [tokenizer.sep_token_id]
+        
+        with torch.no_grad():
+            for pos_example in knowledge_positive_examples:
+                _, pos_example_global_embedding = self.image_encoder(self.knowledge_base.prepare_tensor_for_model(pos_example, self.image_encoder), mode=mode)
+                pos_examples_global_embeddings.append(pos_example_global_embedding)
+                
+            for neg_example in knowledge_negative_examples:
+                _, neg_example_global_embedding = self.image_encoder(self.knowledge_base.prepare_tensor_for_model(neg_example, self.image_encoder), mode=mode)
+                neg_examples_global_embeddings.append(neg_example_global_embedding)
+        
 
-        h = torch.cat((cls_tokens, image_features, text_features[:, 1:]), dim=1)[:, :self.args.max_position_embeddings]
+        num_pos_examples = 1
+        num_neg_examples = len(neg_examples_global_embeddings)
+        a = self.tokenizer.sep_token_id
+
+        h = torch.cat((cls_tokens, image_features, global_image_embedding, *neg_examples_global_embeddings, text_features[:, 1:]), dim=1)[:, :self.args.max_position_embeddings]
         if self.args.progressive:
             assert token_type_ids_q is not None
             token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
             token_type_ids[:, 0] = 1  # cls token
-            token_type_ids[:, 1:image_features.size(1) + 1] = 0  # image features
-            token_type_ids[:, image_features.size(1) + 1:] = token_type_ids_q[:, 1:self.args.max_position_embeddings - (
-                image_features.size(1))]  # drop CLS token_type_id as added before already and cut unnecessary padding
+            num_image_features = image_features.size(1) # 196
+            token_type_ids[:, 1 : 1 + num_image_features] = 2  # image features - 196 positions 1,197 incl
+            ### positive example tokentype id
+            positive_start = 1 + num_image_features
+            token_type_ids[:, positive_start : positive_start + num_pos_examples] = 3  # positive KB examples
+            ## negative examples tokentype id
+            negative_start = positive_start + num_pos_examples
+            token_type_ids[:, negative_start : negative_start + num_neg_examples] = 4  # negative KB examples
+
+            ## add the text type ids
+            start = 1 + num_image_features + num_pos_examples + num_neg_examples
+            remaining = self.args.max_position_embeddings - start  # = 458 - num_image_features + num_pos_examples + num_neg_examples (458 - 197+1+1)
+            
+            
+            
+            print(token_type_ids[0,0] == 1)
+            print(token_type_ids[0,1:197] == 2)
+            print(token_type_ids[0,198] == 3)
+            print(token_type_ids[0,199] == 4)
+            print(token_type_ids[0,208] == 1)
+            
+            token_type_ids[:, start:] = token_type_ids_q[:, 1:1 + remaining]  # drop CLS token_type_id as added before already and cut unnecessary padding
         else:
             token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
             token_type_ids[:, 0] = 1

@@ -11,6 +11,7 @@ from pydash import at
 #from pydash import at
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
+from torchvision.transforms.functional import to_pil_image
 
 
 # Original 4 tokens version
@@ -294,14 +295,24 @@ class RadReStruct(Dataset):
 
         img_path = Path(images_path) / f'{img_name}.png'
         img = Image.open(img_path)
+        #img.save("/home/guests/adrian_delchev/preview_images/rr_pre_transform.jpeg")
         if self.tfm:
             img = self.tfm(img)
+            #transformed_image = to_pil_image(img)
+            #transformed_image.save("/home/guests/adrian_delchev/preview_images/rr_post_transform.jpeg")
 
         question = qa_sample[0]
         answer = qa_sample[1]
         history = qa_sample[2]
         info = qa_sample[3]
+        info['positive_option'] = answer
 
+        ### info contains:
+        ### answer_type: str = 'single_choice'/'multiple_choice'
+        ### options: list(str): ['yes', 'no']
+        ### path: str: 'foreign_objects'
+        ### positive_option: list(str): ['no']
+        
         # create loss mask
         options = info['options']
         answer_idxs = at(self.answer_options, *options)

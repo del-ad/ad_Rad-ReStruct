@@ -64,6 +64,8 @@ if __name__ == '__main__':
     parser.add_argument('--heads', type=int, required=False, default=16, help="heads")
     parser.add_argument('--n_layers', type=int, required=False, default=1, help="num of fusion layers")
     parser.add_argument('--acc_grad_batches', type=int, required=False, default=None, help="how many batches to accumulate gradients")
+    ## KB
+    parser.add_argument('--kb_dir', type=str, required=False, default=None, help="the path to the knowledge base index file")
 
     args = parser.parse_args()
 
@@ -101,7 +103,7 @@ if __name__ == '__main__':
     img_tfm = model.model.image_encoder.img_tfm
     norm_tfm = model.model.image_encoder.norm_tfm
     resize_size = model.model.image_encoder.resize_size
-
+    
     aug_tfm = transforms.Compose([transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0),
                                   # Cutout(),
                                   transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.4),
@@ -112,10 +114,19 @@ if __name__ == '__main__':
     test_tfm = transforms.Compose([img_tfm, norm_tfm]) if norm_tfm is not None else img_tfm
 
     ## SET THE APPROPRIATE TRANSFORMS FOR THE KNOWLEDGE BASE
-    model.model.knowledge_base.train_transform = train_tfm
-    model.model.knowledge_base.test_transform = test_tfm
+    ## make images fake 3 channels by copying the existing channel 3 times
+    ## add the image transforms from the efficient net transforms
+    kb_transforms = transforms.Compose([transforms.Grayscale(num_output_channels=3),
+                                        *img_tfm.transforms])
+    
+    ## apply the normalization transforms from efficient net
+    kb_transforms = transforms.Compose([kb_transforms,
+                                        norm_tfm])
+    
+    model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
+    model.model.knowledge_base.test_transform = kb_transforms
 
-    traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
+    traindataset = RadReStruct(tfm=test_tfm, mode='train', args=args)
     valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     # handle info dicts in collate_fn
