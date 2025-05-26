@@ -13,7 +13,7 @@ from torch.utils.data._utils.collate import collate, default_collate_fn_map
 from torchvision import transforms
 from pytorch_lightning.loggers import WandbLogger
 
-from data_utils.data_radrestruct import RadReStruct, RadReStructCOMBINED, RadReStructReversed, RadReStructCOMBINEDEval
+from data_utils.data_radrestruct import RadReStruct, RadReStructCOMBINEDEval
 from net.model import ModelWrapper
 
 warnings.simplefilter("ignore", UserWarning)
@@ -26,37 +26,6 @@ def collate_dict_fn(batch, *, collate_fn_map):
 def custom_collate(batch):
     default_collate_fn_map.update({dict: collate_dict_fn})
     return collate(batch, collate_fn_map=default_collate_fn_map)
-
-from pytorch_lightning.callbacks import Callback
-import time
-
-class TrainingTimer(Callback):
-    def on_train_start(self, trainer, pl_module):
-        self.start_time = time.time()
-
-    def on_train_end(self, trainer, pl_module):
-        duration = time.time() - self.start_time
-
-        # Format into H:M:S
-        hours = int(duration // 3600)
-        minutes = int((duration % 3600) // 60)
-        seconds = int(duration % 60)
-        formatted_time = f"{hours}h {minutes}m {seconds}s"
-
-        print(f"🕒 Training took {formatted_time}")
-
-        # Log to W&B or any logger
-        if trainer.logger:
-            trainer.logger.log_metrics({
-                "training_time_seconds": duration
-            }, step=trainer.global_step)
-
-        # BONUS: If using W&B, also log it as text (optional)
-        if hasattr(trainer.logger, "experiment"):  # check if W&B logger
-            wandb_exp = trainer.logger.experiment
-            wandb_exp.log({
-                "training_time_hms": formatted_time
-            })
 
 if __name__ == '__main__':
 
@@ -124,12 +93,71 @@ if __name__ == '__main__':
     from torchinfo import summary
 
     summary(model)
+    
+    def collate_dict_fn(batch, *, collate_fn_map):
+        return batch
+    
+    def custom_collate(batch):
+        default_collate_fn_map.update({dict: collate_dict_fn})
+        return collate(batch, collate_fn_map=default_collate_fn_map)
 
     if args.use_pretrained:
-        checkpoint = torch.load(args.model_dir, map_location=torch.device('cpu'))
-        missing_keys, unexpected_keys = model.load_state_dict(checkpoint['state_dict'])
-        assert len(missing_keys) == 0
-        assert len(unexpected_keys) == 0
+        print(f"Loading model from checkpoint: {args.model_dir}")
+        model = ModelWrapper.load_from_checkpoint(args.model_dir, args=args)
+        model.eval()
+        model.freeze()  # Optional: disables gradients
+
+
+        img_tfm = model.model.image_encoder.img_tfm
+        norm_tfm = model.model.image_encoder.norm_tfm
+        resize_size = model.model.image_encoder.resize_size
+    
+        aug_tfm = transforms.Compose([transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0),
+                                  # Cutout(),
+                                  transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.4),
+                                  transforms.RandomResizedCrop(resize_size, scale=(0.5, 1.0), ratio=(0.75, 1.333)),
+                                  transforms.RandomRotation(10)])
+
+        train_tfm = transforms.Compose([img_tfm, aug_tfm, norm_tfm]) if norm_tfm is not None else transforms.Compose([img_tfm, aug_tfm])
+        test_tfm = transforms.Compose([img_tfm, norm_tfm]) if norm_tfm is not None else img_tfm
+
+        kb_transforms = transforms.Compose([transforms.Grayscale(num_output_channels=3),
+                                        *img_tfm.transforms])
+    
+        ## apply the normalization transforms from efficient net
+        kb_transforms = transforms.Compose([kb_transforms,
+                                        norm_tfm])
+    
+        model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
+        model.model.knowledge_base.test_transform = kb_transforms
+
+
+        # Prepare the test dataset and loader
+        testdataset = RadReStructCOMBINEDEval(tfm=test_tfm, mode='train', args=args, type='binary')   
+        testloader = DataLoader(testdataset, batch_size=1, shuffle=False, num_workers=1, collate_fn=custom_collate)
+
+        # Load one batch (or just the first sample)
+        #sample_batch = next(iter(testloader))
+
+        # Move data to the appropriate device
+        #img, question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = sample_batch
+
+        preds = []
+        for batch in testloader:
+             # Move data to the appropriate device
+            img, question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch
+            # Inference (no grad, eval mode)
+            with torch.no_grad():
+                output,_ = model(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, info, mode='train')
+                
+                #out, _ = self(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, info, mode='train')
+
+            logits = output
+            predictions = logits.sigmoid().detach()
+            preds.append(predictions)
+            print("\n=== Inference Output ===")
+            print(predictions)
+        print(f"Difference between predictions: {(preds[0]-preds[1]).abs().max()}")
 
     img_tfm = model.model.image_encoder.img_tfm
     norm_tfm = model.model.image_encoder.norm_tfm
@@ -157,13 +185,8 @@ if __name__ == '__main__':
     model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
     model.model.knowledge_base.test_transform = kb_transforms
 
-    ### Original
-    # traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
-    # valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
-
-    ### New (overfitting)
-    traindataset = RadReStructCOMBINED(tfm=test_tfm, mode='train', args=args, type='multiclass')
-    valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
+    traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
+    #valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     #handle info dicts in collate_fn
     def collate_dict_fn(batch, *, collate_fn_map):
@@ -174,45 +197,5 @@ if __name__ == '__main__':
         return collate(batch, collate_fn_map=default_collate_fn_map)
 
     trainloader = DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
-    valloader = DataLoader(valdataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
-
-    #logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
-    logger = WandbLogger(project='train_radrestruct', name=args.run_name, config=args)
-    ### Original
-    # checkpoint_callback = ModelCheckpoint(monitor='F1/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{F1/val:.2f}',
-    #                                       mode='max', every_n_epochs=1, save_last=True)
-    ### New - Overfitting tests
-    checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(args.save_dir, args.run_name), filename='last-epoch-{epoch}', save_last=True)
-
-    # trainer = Trainer(
-    #     accelerator="gpu" if torch.cuda.is_available() else None,
-    #     devices=1 if torch.cuda.is_available() else None,
-    #     max_epochs=args.epochs,
-    #     precision=16 if args.mixed_precision and torch.cuda.is_available() else 32,
-    #     num_sanity_val_steps=0,
-    #     accumulate_grad_batches=args.acc_grad_batches,
-    #     logger=logger,
-    #     callbacks=[checkpoint_callback],
-    #     benchmark=False,
-    #     deterministic=True
-    # )
-
-    ### New - Overfitting
-    trainer = Trainer(
-        accelerator="gpu" if torch.cuda.is_available() else None,
-        devices=1 if torch.cuda.is_available() else None,
-        max_epochs=args.epochs,
-        precision=16 if args.mixed_precision and torch.cuda.is_available() else 32,
-        num_sanity_val_steps=0,
-        accumulate_grad_batches=args.acc_grad_batches,
-        logger=logger,
-        callbacks=[checkpoint_callback, TrainingTimer()],
-        benchmark=False,
-        deterministic=True
-    )
-
-    if args.use_pretrained:
-        trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader, ckpt_path=args.model_dir)
-    else:
-        trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader)
+    #valloader = DataLoader(valdataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate, pin_memory=True)
 

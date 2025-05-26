@@ -1,5 +1,6 @@
 import itertools
 import json
+from pathlib import Path
 import warnings
 from copy import deepcopy
 
@@ -14,6 +15,10 @@ from data_utils.preprocessing_radrestruct import get_topic_question, get_questio
 from evaluation.defs import *
 
 warnings.simplefilter("ignore", UserWarning)
+
+path_answers = {}
+with open(Path('/home/guests/adrian_delchev/code/ad_Rad-ReStruct/data/radrestruct/path_answers.json')) as f:
+    path_answers = json.load(f)
 
 
 def get_value(out, info, answer_options):
@@ -60,6 +65,26 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
     for i in range(len(gt_instances)):
         assert instance_keys == list(gt_instances[i].keys())
     no_predicted = False
+    
+    
+    
+        ### Constructing the batch_metadata obj needed for the knowledge_base
+    top_name = topic_name
+    if topic_name == 'body_region' or topic_name=='body_regions':
+        top_name = topic_name.replace("_"," ")
+        
+
+    path = f"{area_name}_{top_name}_{elem_name}"
+    
+    
+    if topic_name == 'infos':
+        path = f"{area_name}_{top_name}"
+    
+    batch_metadata = {'path': path,
+                      'options': path_answers[path]}
+    
+    
+    
 
     max_instance_key = f"{area_name}/{topic_name}" if topic_name == 'infos' else f"{area_name}/{elem_name}"
     max_num_occurences = max_instances[max_instance_key] if max_instance_key in max_instances else 1
@@ -76,13 +101,33 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
             else:
                 # generate follow-up question
                 question = get_question(elem_name, topic_name, area_name, first_instance=False)
+                
+                
+                ### Constructing the batch_metadata obj needed for the knowledge_base
+                top_name = topic_name
+                if topic_name == 'body_region' or topic_name=='body_regions':
+                    top_name = topic_name.replace("_"," ")
+                    
+                    
+                path = f"{area_name}_{top_name}_{elem_name}"
+                
+                
+                if topic_name == 'infos':
+                    path = f"{area_name}_{top_name}"
+                
+                batch_metadata = {'path': path,
+                                    'options': path_answers[path]}
+                
+                
+                
+                
                 # make prediction
                 tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, elem_history, tokenizer, mode='val', args=args)
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
                 out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-                               token_type_ids_q=token_type_ids.unsqueeze(0), mode='val')
+                               token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                 q_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
 
@@ -135,10 +180,29 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, elem_history, tokenizer, mode='val',
                                                                                                  args=args)
                         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                        
+                        ### Constructing the batch_metadata obj needed for the knowledge_base
+                        top_name = topic_name
+                        if topic_name == 'body_region' or topic_name=='body_regions':
+                            top_name = topic_name.replace("_"," ")
+                        
+                        my_key = key.replace("_"," ")
+                            
+                        path = f"{area_name}_{top_name}_{elem_name}_{my_key}"
+                        
+                        if top_name == 'infos':
+                            path = f"{area_name}_{top_name}_{my_key}"                        
+                        
+                        batch_metadata = {'path': path,
+                                            'options': path_answers[path]}
+                        
+                        
+                        
+                        
                         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                        attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-                                       token_type_ids_q=token_type_ids.unsqueeze(0), mode='val')
+                                       token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                         language_answers, pred = get_value(out, infos[key], answer_options)
                         if match_instances:
@@ -155,10 +219,27 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, elem_history, tokenizer, mode='val',
                                                                                                  args=args)
                         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                        
+                        
+                        ### Constructing the batch_metadata obj needed for the knowledge_base
+                        top_name = topic_name
+                        if topic_name == 'body_region' or topic_name=='body_regions':
+                            top_name = topic_name.replace("_"," ")
+                            
+                        path = f"{area_name}_{top_name}_{elem_name}_{key}"
+                        
+                        if top_name == 'infos':
+                            path = f"{area_name}_{top_name}_{key}"
+                        
+                        batch_metadata = {'path': path,
+                                            'options': path_answers[path]}
+                        
+                        
+                        
                         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                        attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-                                       token_type_ids_q=token_type_ids.unsqueeze(0), mode='val')
+                                       token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                         language_answers, pred = get_value(out, infos[key], answer_options)
                         if match_instances:
@@ -175,10 +256,30 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, elem_history, tokenizer, mode='val',
                                                                                                  args=args)
                         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                        
+                        
+                        
+                        ### Constructing the batch_metadata obj needed for the knowledge_base
+                        top_name = topic_name
+                        if topic_name == 'body_region' or topic_name=='body_regions':
+                            top_name = topic_name.replace("_"," ")
+                            
+                        path = f"{area_name}_{top_name}_{elem_name}_{key}"
+                        
+                        if top_name == 'infos':
+                            path = f"{area_name}_{top_name}_{key}"
+                        
+                        batch_metadata = {'path': path,
+                                            'options': path_answers[path]}
+                        
+                        
+                        
+                        
+                        
                         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                        attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-                                       token_type_ids_q=token_type_ids.unsqueeze(0), mode='val')
+                                       token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                         language_answers, pred = get_value(out, infos[key], answer_options)
                         if match_instances:
@@ -196,10 +297,31 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                                                                                                  args=args)
                         # with torch.cuda.amp.autocast():
                         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                        
+                        
+                        ### Constructing the batch_metadata obj needed for the knowledge_base
+                        top_name = topic_name
+                        if topic_name == 'body_region' or topic_name=='body_regions':
+                            top_name = topic_name.replace("_"," ")
+                            
+                        path = f"{area_name}_{top_name}_{elem_name}_{key}"
+                        
+                        
+                        if top_name == 'infos':
+                            path = f"{area_name}_{top_name}_{key}"
+                        
+                        
+                        batch_metadata = {'path': path,
+                                            'options': path_answers[path]}
+                        
+                        
+                        
+                        
+                        
                         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                        attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-                                       token_type_ids_q=token_type_ids.unsqueeze(0), mode='val')
+                                       token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                         language_answers, pred = get_value(out, infos[key], answer_options)
                         if match_instances:
@@ -330,10 +452,25 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                                                                                  args=args)
         # with torch.cuda.amp.autocast():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        ### Constructing the batch_metadata obj needed for the knowledge_base
+        top_name = topic_name
+        if topic_name == 'body_region' or topic_name=='body_regions':
+            top_name = topic_name.replace("_"," ")
+            
+        path = f"{area_name}_{top_name}"
+        
+        if topic_name == 'infos':
+            path = f"{area_name}_{top_name}"
+            
+        
+        batch_metadata = {'path': path,
+                            'options': path_answers[path]}
+        
         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                        attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
-                       mode='val')
+                       batch_metadata=batch_metadata, mode='val')
 
         area_positive_pred = torch.argmax(out[0, [58, 95]]) == 1  # yes was predicted
 
@@ -369,10 +506,30 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                     tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, history, tokenizer, mode='val', args=args)
                     # with torch.cuda.amp.autocast():
                     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    
+                    
+                    
+                            ### Constructing the batch_metadata obj needed for the knowledge_base
+                    top_name = topic_name
+                    if topic_name == 'body_region' or topic_name=='body_regions':
+                        top_name = topic_name.replace("_"," ")
+                        
+                    path = f"{area_name}_{top_name}_{elem_name}"
+                    
+                    if topic_name == 'infos':
+                        path = f"{area_name}_{top_name}"
+                    
+                    
+                    batch_metadata = {'path': path,
+                                        'options': path_answers[path]}
+                    
+                    
+                    
+                    
                     out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                    q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                    attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-                                   token_type_ids_q=token_type_ids.unsqueeze(0), mode='val')
+                                   token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                     elem_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
 
