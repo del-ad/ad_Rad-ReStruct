@@ -20,6 +20,25 @@ path_answers = {}
 with open(Path('/home/guests/adrian_delchev/code/ad_Rad-ReStruct/data/radrestruct/path_answers.json')) as f:
     path_answers = json.load(f)
 
+def get_positive_options(report_keys, report_vector_ground_truth, kb_base_path, report_keys_paths):
+    indecies = [report_keys.index(path_in_report_keys_vector) if path_in_report_keys_vector in report_keys else -1 for path_in_report_keys_vector in report_keys_paths]
+    
+    if all(item == -1 for item in indecies):
+        return []
+    else:
+        indecies_tensor = torch.tensor(indecies, dtype=torch.long)
+        invalid_mask = indecies_tensor == -1
+        safe_indecies_tensor = torch.where(invalid_mask, torch.tensor(0, dtype=torch.long), indecies_tensor)
+        
+        # Perform the lookup using the safe indices
+        # This will return actual values for valid indices, and
+        # values from report_vector_gt[0,0] for invalid indices
+        temp_values = report_vector_ground_truth[0, safe_indecies_tensor]
+        # Now, use torch.where to put 0 where invalid_mask is True, otherwise keep temp_values
+        values_at_indecies = torch.where(invalid_mask, torch.tensor(0, dtype=report_vector_ground_truth.dtype), temp_values).tolist()
+        
+        positive_options = [option for option, flag in zip(path_answers[kb_base_path], values_at_indecies) if flag == 1]
+        return positive_options
 
 def get_value(out, info, answer_options):
     option_idxs = [answer_options[option] for option in info['options']]
@@ -67,8 +86,8 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
     no_predicted = False
     
     
-    
-        ### Constructing the batch_metadata obj needed for the knowledge_base
+    ### Instance iteration base metadata object - will be overridden by specific l3 questions
+    ### Constructing the batch_metadata obj needed for the knowledge_base
     top_name = topic_name
     if topic_name == 'body_region' or topic_name=='body_regions':
         top_name = topic_name.replace("_"," ")
@@ -80,8 +99,12 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
     if topic_name == 'infos':
         path = f"{area_name}_{top_name}"
     
-    batch_metadata = {'path': path,
-                      'options': path_answers[path]}
+    report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{answer_option}" for answer_option in path_answers[path]]
+    positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
+    
+    batch_metadata = [{'path': path,
+                        'options': path_answers[path],
+                        'positive_option': positive_options}]
     
     
     
@@ -103,6 +126,7 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                 question = get_question(elem_name, topic_name, area_name, first_instance=False)
                 
                 
+                ### Followup L2 question (2,3,4th instance)
                 ### Constructing the batch_metadata obj needed for the knowledge_base
                 top_name = topic_name
                 if topic_name == 'body_region' or topic_name=='body_regions':
@@ -115,11 +139,16 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                 if topic_name == 'infos':
                     path = f"{area_name}_{top_name}"
                 
-                batch_metadata = {'path': path,
-                                    'options': path_answers[path]}
+                report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{answer_option}_{instance_idx}" for answer_option in path_answers[path]]
+                positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
+                
+                batch_metadata = [{'path': path,
+                        'options': path_answers[path],
+                        'positive_option': positive_options}]
                 
                 
                 
+        
                 
                 # make prediction
                 tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, elem_history, tokenizer, mode='val', args=args)
@@ -128,6 +157,11 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                                q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
+                
+                # cleanup
+                del batch_metadata
+                del positive_options
+                del report_keys_paths
 
                 q_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
 
@@ -193,11 +227,26 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         if top_name == 'infos':
                             path = f"{area_name}_{top_name}_{my_key}"                        
                         
-                        batch_metadata = {'path': path,
-                                            'options': path_answers[path]}
+                        report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{key}_{answer_option}_{instance_idx}" for answer_option in path_answers[path]]
+                        positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
                         
+                        batch_metadata = [{'path': path,
+                                            'options': path_answers[path],
+                                            'positive_option': positive_options}]
                         
+                        # indecies = [report_keys.index(path_in_report_keys_vector) if path_in_report_keys_vector in report_keys else -1 for path_in_report_keys_vector in report_keys_paths]
+                        # indecies_tensor = torch.tensor(indecies, dtype=torch.long)
+                        # invalid_mask = indecies_tensor == -1
+                        # safe_indecies_tensor = torch.where(invalid_mask, torch.tensor(0, dtype=torch.long), indecies_tensor)
                         
+                        # # Perform the lookup using the safe indices
+                        # # This will return actual values for valid indices, and
+                        # # values from report_vector_gt[0,0] for invalid indices
+                        # temp_values = report_vector_gt[0, safe_indecies_tensor]
+                        # # Now, use torch.where to put 0 where invalid_mask is True, otherwise keep temp_values
+                        # values_at_indecies = torch.where(invalid_mask, torch.tensor(0, dtype=report_vector_gt.dtype), temp_values)
+                        
+                        #positive_options = [path_answers[path][i] for i, flag in zip(path_answers[path], values_at_indecies) if flag == 1]
                         
                         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
@@ -231,8 +280,12 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         if top_name == 'infos':
                             path = f"{area_name}_{top_name}_{key}"
                         
-                        batch_metadata = {'path': path,
-                                            'options': path_answers[path]}
+                        report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{key}_{answer_option}_{instance_idx}" for answer_option in path_answers[path]]
+                        positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
+                        
+                        batch_metadata = [{'path': path,
+                                            'options': path_answers[path],
+                                            'positive_option': positive_options}]
                         
                         
                         
@@ -269,8 +322,12 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         if top_name == 'infos':
                             path = f"{area_name}_{top_name}_{key}"
                         
-                        batch_metadata = {'path': path,
-                                            'options': path_answers[path]}
+                        report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{key}_{answer_option}_{instance_idx}" for answer_option in path_answers[path]]
+                        positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
+                        
+                        batch_metadata = [{'path': path,
+                                            'options': path_answers[path],
+                                            'positive_option': positive_options}]
                         
                         
                         
@@ -311,8 +368,12 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                             path = f"{area_name}_{top_name}_{key}"
                         
                         
-                        batch_metadata = {'path': path,
-                                            'options': path_answers[path]}
+                        report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{key}_{answer_option}_{instance_idx}" for answer_option in path_answers[path]]
+                        positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
+                        
+                        batch_metadata = [{'path': path,
+                                            'options': path_answers[path],
+                                            'positive_option': positive_options}]
                         
                         
                         
@@ -455,17 +516,25 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
         
         ### Constructing the batch_metadata obj needed for the knowledge_base
         top_name = topic_name
+        base_path_report = f"{area_name}_{top_name}"
+        
+        ### L1 question
+        
         if topic_name == 'body_region' or topic_name=='body_regions':
             top_name = topic_name.replace("_"," ")
             
-        path = f"{area_name}_{top_name}"
+        base_path_kb = f"{area_name}_{top_name}"
         
         if topic_name == 'infos':
             path = f"{area_name}_{top_name}"
             
         
-        batch_metadata = {'path': path,
-                            'options': path_answers[path]}
+        report_keys_paths = [f"{area_name}_{topic_name}_{answer_option}" for answer_option in path_answers[base_path_kb]]
+        positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=base_path_kb, report_keys_paths=report_keys_paths)
+        
+        batch_metadata = [{'path': base_path_kb,
+                            'options': path_answers[base_path_kb],
+                            'positive_option': positive_options}]
         
         out, _ = model(img=img.to(device), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
@@ -509,7 +578,7 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                     
                     
                     
-                            ### Constructing the batch_metadata obj needed for the knowledge_base
+                    ### Constructing the batch_metadata obj needed for the knowledge_base
                     top_name = topic_name
                     if topic_name == 'body_region' or topic_name=='body_regions':
                         top_name = topic_name.replace("_"," ")
@@ -520,8 +589,15 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                         path = f"{area_name}_{top_name}"
                     
                     
-                    batch_metadata = {'path': path,
-                                        'options': path_answers[path]}
+                    ### L2 question first instance
+                    
+                    ### it's the first instance
+                    report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{answer_option}_0" for answer_option in path_answers[path]]
+                    positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
+                    
+                    batch_metadata = [{'path': path,
+                                        'options': path_answers[path],
+                                        'positive_option': positive_options}]
                     
                     
                     
@@ -532,6 +608,10 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                                    token_type_ids_q=token_type_ids.unsqueeze(0), batch_metadata=batch_metadata, mode='val')
 
                     elem_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
+                    
+                    del batch_metadata
+                    del positive_options
+                    del report_keys_paths
 
                     if not elem_positive_pred:
                         pred_vector.extend(NO)

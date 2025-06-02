@@ -77,7 +77,7 @@ class Constants:
             self.KNOWLEDGE_BASE_CAPPED_PATH = Path(
                 "/home/guests/adrian_delchev/code/radrestruct_knowledge_base/generators/KNOWLEDGE_BASE_valid_only_capped.json")
             self.KNOWLEDGE_BASE_INDEX_FILE = Path(
-                "/home/guests/adrian_delchev/code/radrestruct_knowledge_base/kb/KNOWLEDGE_BASE_index.json")
+                "/home/guests/adrian_delchev/code/ad_Rad-ReStruct/knowledge_base/KNOWLEDGE_BASE_index.json")
 
         ### General shared data
         self.ANSWER_OPTIONS_OPTION_STR_TO_CODE_INT = {

@@ -1,4 +1,7 @@
 import argparse
+from collections import OrderedDict
+from datetime import datetime
+import gc
 import json
 import os
 import warnings
@@ -7,18 +10,23 @@ import wandb
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from torch.utils.data import DataLoader
 from torch.utils.data._utils.collate import collate, default_collate_fn_map
 from torchvision import transforms
 from pytorch_lightning.loggers import WandbLogger
 
 from data_utils.data_radrestruct import RadReStruct, RadReStructCOMBINED, RadReStructReversed, RadReStructCOMBINEDEval
+from knowledge_base.knowledge_base_loader import KnowledgeBase,CachedKnowledgeBase
 from net.model import ModelWrapper
+
+import tracemalloc, linecache
+import objgraph
 
 warnings.simplefilter("ignore", UserWarning)
 
-
+def timestamp():
+    return f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
 # handle info dicts in collate_fn
 def collate_dict_fn(batch, *, collate_fn_map):
     return batch
@@ -27,39 +35,31 @@ def custom_collate(batch):
     default_collate_fn_map.update({dict: collate_dict_fn})
     return collate(batch, collate_fn_map=default_collate_fn_map)
 
-from pytorch_lightning.callbacks import Callback
-import time
+import pytorch_lightning as pl
+import gc, ctypes, ctypes.util
+from typing import Optional
 
-class TrainingTimer(Callback):
-    def on_train_start(self, trainer, pl_module):
-        self.start_time = time.time()
+def trim_cpu_cache():
+    """Release freed CPU heap pages back to the OS."""
+    gc.collect()
+    try:                             # PyTorch ≥ 2.2
+        import torch
+        torch.malloc_trim()
+    except (ImportError, AttributeError):
+        # earlier versions – call glibc directly
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        libc.malloc_trim(0)
 
-    def on_train_end(self, trainer, pl_module):
-        duration = time.time() - self.start_time
+class MallocTrim(pl.Callback):
+    def __init__(self, every_steps: int = 500):
+        self.every_steps = every_steps
 
-        # Format into H:M:S
-        hours = int(duration // 3600)
-        minutes = int((duration % 3600) // 60)
-        seconds = int(duration % 60)
-        formatted_time = f"{hours}h {minutes}m {seconds}s"
-
-        print(f"🕒 Training took {formatted_time}")
-
-        # Log to W&B or any logger
-        if trainer.logger:
-            trainer.logger.log_metrics({
-                "training_time_seconds": duration
-            }, step=trainer.global_step)
-
-        # BONUS: If using W&B, also log it as text (optional)
-        if hasattr(trainer.logger, "experiment"):  # check if W&B logger
-            wandb_exp = trainer.logger.experiment
-            wandb_exp.log({
-                "training_time_hms": formatted_time
-            })
+    def on_train_batch_end(self, trainer, *_):
+        if trainer.global_step and trainer.global_step % self.every_steps == 0:
+            trim_cpu_cache()
 
 if __name__ == '__main__':
-
+    tracemalloc.start()
     parser = argparse.ArgumentParser(description="Finetune on RadReStruct")
 
     parser.add_argument('--run_name', type=str, required=False, default="debug", help="run name for wandb")
@@ -119,6 +119,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     model = ModelWrapper(args)
+    model.model.image_encoder.missing_knowledge_embedding = model.model.image_encoder.missing_knowledge_embedding.to(device=device)
 
     # use torchinfo to see model architecture and trainable parameters
     from torchinfo import summary
@@ -126,8 +127,29 @@ if __name__ == '__main__':
     summary(model)
 
     if args.use_pretrained:
+        print(f"{timestamp()}Loading model from checkpoint: {args.model_dir}")
+        
         checkpoint = torch.load(args.model_dir, map_location=torch.device('cpu'))
-        missing_keys, unexpected_keys = model.load_state_dict(checkpoint['state_dict'])
+        full_state_dict = checkpoint['state_dict']
+        
+        image_encoder_state_dict = OrderedDict()
+        for k, v in full_state_dict.items():
+            if k.startswith('model.image_encoder.'):
+                # Remove the 'image_encoder.' prefix
+                new_key = k.replace('model.image_encoder.', '')
+                image_encoder_state_dict[new_key] = v
+        
+        print(f"\n {timestamp()}Attempting to load state_dict into image_encoder...")
+        missing_keys, unexpected_keys = model.model.image_encoder.load_state_dict(image_encoder_state_dict)
+        
+        # Freeze the image encoder
+        for param in model.model.image_encoder.parameters():
+            param.requires_grad = False
+        print(f"{timestamp()}The image encoder has been frozen")
+        
+        ### Old - loading full model weights
+        #checkpoint = torch.load(args.model_dir, map_location=torch.device('cpu'))
+        #missing_keys, unexpected_keys = model.load_state_dict(checkpoint['state_dict'])
         assert len(missing_keys) == 0
         assert len(unexpected_keys) == 0
 
@@ -154,6 +176,8 @@ if __name__ == '__main__':
     kb_transforms = transforms.Compose([kb_transforms,
                                         norm_tfm])
     
+    model.model.knowledge_base = CachedKnowledgeBase(args.kb_dir, kb_transforms, img_transform=img_tfm, norm_transform=norm_tfm)
+    
     model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
     model.model.knowledge_base.test_transform = kb_transforms
 
@@ -162,13 +186,13 @@ if __name__ == '__main__':
     # valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     ### New (overfitting)
-    traindataset = RadReStructCOMBINED(tfm=test_tfm, mode='train', args=args, type='multiclass')
+    traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
     valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     #handle info dicts in collate_fn
     def collate_dict_fn(batch, *, collate_fn_map):
         return batch
-    
+
     def custom_collate(batch):
         default_collate_fn_map.update({dict: collate_dict_fn})
         return collate(batch, collate_fn_map=default_collate_fn_map)
@@ -179,10 +203,10 @@ if __name__ == '__main__':
     #logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
     logger = WandbLogger(project='train_radrestruct', name=args.run_name, config=args)
     ### Original
-    # checkpoint_callback = ModelCheckpoint(monitor='F1/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{F1/val:.2f}',
-    #                                       mode='max', every_n_epochs=1, save_last=True)
+    checkpoint_callback = ModelCheckpoint(monitor='F1/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{F1/val:.2f}',
+                                          mode='max', every_n_epochs=1, save_last=True)
     ### New - Overfitting tests
-    checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(args.save_dir, args.run_name), filename='last-epoch-{epoch}', save_last=True)
+    #checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(args.save_dir, args.run_name), filename='last-epoch-{epoch}', save_last=True)
 
     # trainer = Trainer(
     #     accelerator="gpu" if torch.cuda.is_available() else None,
@@ -206,13 +230,32 @@ if __name__ == '__main__':
         num_sanity_val_steps=0,
         accumulate_grad_batches=args.acc_grad_batches,
         logger=logger,
-        callbacks=[checkpoint_callback, TrainingTimer()],
+        callbacks=[checkpoint_callback,MallocTrim(every_steps=1500)],
+        #callbacks=[checkpoint_callback,MallocTrim(every_steps=200)],
         benchmark=False,
         deterministic=True
     )
+    # print("Before training:")
+    # objgraph.show_most_common_types(limit=20)
+    # before = objgraph.by_type('Tensor')
+    # before = objgraph.by_type('Tensor')
+    
+    
+    trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader)
+    
+    # print("After some training:")
+    # objgraph.show_most_common_types(limit=20)
+    
+    # after = objgraph.by_type('Tensor')
+    # print(f"Tensors before: {len(before)}, after: {len(after)}")
+    # objgraph.show_backrefs(
+    # objgraph.by_type('Tensor')[:20],  # Pick 3 sample Tensors
+    # max_depth=4,                      # How deep to search the reference chain
+    # filename='/home/guests/adrian_delchev/tensor_leak.dot'        # This will output a PNG file
+    # )
 
-    if args.use_pretrained:
-        trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader, ckpt_path=args.model_dir)
-    else:
-        trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader)
+    # if args.use_pretrained:
+    #     trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader, ckpt_path=args.model_dir)
+    # else:
+    #     trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader)
 

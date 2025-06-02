@@ -1,3 +1,4 @@
+from datetime import datetime
 import numpy as np
 import timm
 import torch
@@ -6,7 +7,8 @@ import torch.nn.functional as F
 from timm.data import resolve_data_config, create_transform
 from torchvision.transforms import transforms
 
-
+def timestamp():
+    return f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
 class ImageEncoderEfficientNet(nn.Module):
     def __init__(self, args):
         super(ImageEncoderEfficientNet, self).__init__()
@@ -170,6 +172,7 @@ class ImageEncoderEfficientNet(nn.Module):
           -1.0591e-03,  1.5921e-02, -2.7625e-02, -3.5394e-02,  2.6525e-02,
           -1.0573e-02, -2.0254e-03, -2.5659e-02]]])
         self.missing_knowledge_embedding = F.normalize(self.missing_knowledge_embedding, dim=-1)
+        #self.missing_knowledge_embedding = self.missing_knowledge_embedding.to(device=self.model.device)
         if 'radrestruct' in args.data_dir:
             self.transforms.transforms[0] = transforms.Resize((488, 488))
 
@@ -177,14 +180,14 @@ class ImageEncoderEfficientNet(nn.Module):
 
         self.relu = nn.ReLU()
         ### Original
-        #self.rescale_conv = nn.Conv2d(2048, args.hidden_size, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        self.rescale_conv = nn.Conv2d(2048, args.hidden_size, kernel_size=(1, 1), stride=(1, 1), bias=False)
         
         ### New
-        self.rescale_conv = nn.Sequential(
-            nn.Conv2d(2048, args.hidden_size, kernel_size=1, bias=False),
-            nn.ReLU(inplace=True), 
-            nn.BatchNorm2d(args.hidden_size)  # Helps with AMP stability
-        )
+        # self.rescale_conv = nn.Sequential(
+        #     nn.Conv2d(2048, args.hidden_size, kernel_size=1, bias=False),
+        #     nn.ReLU(inplace=True), 
+        #     nn.BatchNorm2d(args.hidden_size)  # Helps with AMP stability
+        # )
         self.rescale_pool = nn.AvgPool2d(kernel_size=2, stride=1)
 
         # transforms
@@ -277,6 +280,12 @@ class ImageEncoderEfficientNet(nn.Module):
         finally:
             if was_training:
                 self.train()
+                
+        if not torch.isfinite(image_tokens).all():
+            print(f'{timestamp()}Image encoder produced nan/inf in image_tokens')
+
+        if not torch.isfinite(global_embedding).all():
+            print(f'{timestamp()}Image encoder produced nan/inf in global_embedding')
 
         return image_tokens, global_embedding
     
