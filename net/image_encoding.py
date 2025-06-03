@@ -308,8 +308,8 @@ class ImageEncoderEfficientNet(nn.Module):
             global_embedding = x.amax(dim=[2, 3])  # (B, hidden_size)
             global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
 
-            # Token embedding (flatten spatial dimensions into sequence)
-            image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
+            # # Token embedding (flatten spatial dimensions into sequence)
+            # image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
             
         finally:
             if was_training:

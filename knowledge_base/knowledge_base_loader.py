@@ -255,12 +255,24 @@ class CachedKnowledgeBase:
         ## Load in full size, then resize
         print("Preloading knowledge base...")
         for idx, (kb_key, image_paths) in enumerate(self.kb.items()):
-            self.image_cache[kb_key] = []
-            for kb_img_path in image_paths[:3]:
-                img = self.load_kb_image_cv2(kb_img_path, self.img_transform, self.norm_transform)
-                self.image_cache[kb_key].append(img)
-            #self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
-            print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
+            if idx >= 0:
+                self.image_cache[kb_key] = []
+                for kb_img_path in image_paths[:5]:
+                    ####### Load using OpenCV - load, resize, transform
+                    #img = self.load_kb_image_cv2(kb_img_path, self.img_transform, self.norm_transform)
+                    #self.image_cache[kb_key].append(img)
+                    
+                    ####### Load ready images using PIL
+                    img = self.load_kb_image_PIL(kb_img_path, self.img_transform, self.norm_transform)
+                    self.image_cache[kb_key].append(img)
+                    
+                    ####### ---- SAVE IMAGES INSTEAD
+                    #self.save_kb_images_cv2(kb_img_path, self.img_transform, self.norm_transform)
+                    
+                #self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
+                print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
+            
+        print(f"NUM OF IMAGES: {sum((len(value) for key,value in self.image_cache.items()))}")
             
     # def get_images_for_paths(self, batch_metadata):
     #     batch_examples = []
@@ -287,6 +299,9 @@ class CachedKnowledgeBase:
     #         batch_examples.append(examples)
     #     return batch_examples
     
+    
+    ### given a path - return the knowledge base examples for 
+    ## that path - 
     def get_images_for_paths(self, batch_metadata):
         batch_examples = []
         for meta in batch_metadata:
@@ -368,6 +383,10 @@ class CachedKnowledgeBase:
 
     def load_kb_image_cv2(self, image_path, img_tfm, norm_tfm, resize_size=(488, 488)):
         img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        
+        split = image_path.split("/")
+        last = split[-1]
+        file_name = last.split(".")[0]
 
         if img is None:
             raise FileNotFoundError(f"Image not found at: {image_path}")
@@ -377,18 +396,93 @@ class CachedKnowledgeBase:
 
         # Convert NumPy array (HWC, uint8) to PIL Image
         img = Image.fromarray(img)
+        
+        pil_img = to_pil_image(img)
+        img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
 
         # Now apply img_tfm (e.g., Resize/Crop etc.)
-        img = img_tfm(img)
+        #img = img_tfm(img)
 
+        # If img_tfm includes ToTensor, then just:
+        #img = norm_tfm(img)
+        
+        # pil_img = to_pil_image(img)
+        # nd_img = np.array(img)
+        # print(f"Image shape: {nd_img.shape}")
+        # print(f"Bytes in memory: {nd_img.nbytes} bytes")
+        # print(f"Kilobytes: {nd_img.nbytes / 1024:.2f} KB")
+        # print(f"Megabytes: {nd_img.nbytes / 1024**2:.2f} MB")
+        
+        # print("PYTORCH TENSOR:")
+        # n_bytes = img.numel() * img.element_size()
+        # print(f"Image shape: {img.shape}")
+        # print(f"Bytes in memory: {n_bytes}")
+        # print(f"Kilobytes: {n_bytes / 1024:.2f} KB")
+        # print(f"Megabytes: {n_bytes / (1024*1024):.2f} MB")
+        # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
+        # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.jpeg")
+        # # self.save_normalized_tensor_image(img, self.norm_transform, "img_1.jpeg" ) or png
+        img.requires_grad = False
+        return img
+    
+    def load_kb_image_PIL(self, image_path, img_tfm, norm_tfm, resize_size=(488, 488)):
+        img = Image.open(image_path)
+        
+
+        if img is None:
+            raise FileNotFoundError(f"Image not found at: {image_path}")
+
+
+        img = img_tfm(img)
         # If img_tfm includes ToTensor, then just:
         img = norm_tfm(img)
         
-        # pil_img = to_pil_image(img)
-        # pil_img.save("unnorm_img_1.jpeg")
-        # self.save_normalized_tensor_image(img, self.norm_transform, "img_1.jpeg" )
+        img.requires_grad = False
+        return img
+    
+    def save_kb_images_cv2(self, image_path, img_tfm, norm_tfm, resize_size=(488, 488)):
+        img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        
+        split = image_path.split("/")
+        last = split[-1]
+        file_name = last.split(".")[0]
 
-        return img.detach()
+        if img is None:
+            raise FileNotFoundError(f"Image not found at: {image_path}")
+
+        img = cv2.resize(img, resize_size, interpolation=cv2.INTER_AREA)
+        img = np.stack([img] * 3, axis=-1)  # HWC, 3-channel
+
+        # Convert NumPy array (HWC, uint8) to PIL Image
+        img = Image.fromarray(img)
+        
+        img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
+        del img
+
+        # Now apply img_tfm (e.g., Resize/Crop etc.)
+        #img = img_tfm(img)
+
+        # If img_tfm includes ToTensor, then just:
+        #img = norm_tfm(img)
+        
+        # pil_img = to_pil_image(img)
+        # nd_img = np.array(img)
+        # print(f"Image shape: {nd_img.shape}")
+        # print(f"Bytes in memory: {nd_img.nbytes} bytes")
+        # print(f"Kilobytes: {nd_img.nbytes / 1024:.2f} KB")
+        # print(f"Megabytes: {nd_img.nbytes / 1024**2:.2f} MB")
+        
+        # print("PYTORCH TENSOR:")
+        # n_bytes = img.numel() * img.element_size()
+        # print(f"Image shape: {img.shape}")
+        # print(f"Bytes in memory: {n_bytes}")
+        # print(f"Kilobytes: {n_bytes / 1024:.2f} KB")
+        # print(f"Megabytes: {n_bytes / (1024*1024):.2f} MB")
+        # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
+        # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.jpeg")
+        # # self.save_normalized_tensor_image(img, self.norm_transform, "img_1.jpeg" ) or png
+        
+        return None
     
     def save_normalized_tensor_image(self, tensor_img, norm_transform, save_path):
         """
@@ -549,7 +643,7 @@ class KnowledgeBasePostProcessor:
             length = encoded['attention_mask'][i].sum().item()
             emb = option_embeddings[i, :length]  # (num_tokens, emb_dim)
             emb = emb.unsqueeze(1)  # (num_tokens, 1, emb_dim)
-            option_to_embedding[option] = emb  # .detach() if needed
+            option_to_embedding[option] = emb.detach()  # .detach() if needed
 
         # Step 4: Assemble per-batch dicts
         batch_options_embeddings = []

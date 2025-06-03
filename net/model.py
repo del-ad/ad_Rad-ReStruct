@@ -397,107 +397,380 @@ class Model(nn.Module):
     ### New Architecture - forward
     
     def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
-        
-        ## global image embedding serves as positive example in sanity check
+
+        # --- IMAGE/TEXT ENCODING (as before) ---
         image_features, global_image_embedding = self.image_encoder(img, mode=mode)
-        image_features = image_features.detach()
-        global_image_embedding = global_image_embedding.detach()
+        # image_features = image_features.detach()
+        # global_image_embedding = global_image_embedding.detach()
+        image_features = image_features
+        global_image_embedding = global_image_embedding
         text_features = self.question_encoder(input_ids, q_attn_mask)
         cls_tokens = text_features[:, 0:1]
+        
+        used_device = cls_tokens.device
+        dtype = cls_tokens.dtype
 
-        # a list of dicts, where each list element represents a batch element, and each dict has options and paths
         kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
 
-
-        ##### need to change the representation of the MISSING_KNOWLEDGE embedding
+        # === INLINE produce_option_embeddings_batched ===
         with torch.no_grad():
-            image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
+            image_batches = []
+            slice_metadata = []
+            current_index = 0
 
-            ### dry run fix
-            # if mode == 'train':
-            #     options_embedding_img_sanity = self.produce_option_sanity_embeddings_fast_fix(kb_examples=image_options_embedding_dict, global_embeddings=global_image_embedding, batch_metadata=batch_metadata, verify=False) 
-            # elif mode == 'val':
-            #     options_embedding_img_sanity = self.produce_option_sanity_embeddings_fast_fix(kb_examples=image_options_embedding_dict, global_embeddings=global_image_embedding, batch_metadata=batch_metadata, verify=False) 
-            
-            # ### convert to SANITY EMBEDDINGS
-            # for idx, batch in enumerate(batch_metadata):
-            #     positive_options = set(batch['positive_option'])
-            #     for option,tensor in image_options_embedding_dict[idx].items():
-            #         if option in positive_options:
-            #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
-            #             del tensor
+            was_training = self.image_encoder.training
+            self.image_encoder.eval()
+            try:
+                for batch_idx, single_batch in enumerate(kb_examples):
+                    for option, images in single_batch.items():
+                        if images:
+                            tensor = torch.stack(images)
+                            image_batches.append(tensor)
+                            start = current_index
+                            end = start + tensor.shape[0]
+                            slice_metadata.append((batch_idx, option, start, end))
+                            current_index = end
 
+                pooled_embeddings = [{} for _ in range(len(kb_examples))]
+                if len(image_batches) > 0:
+                    batched_images_cpu = torch.cat(image_batches, dim=0)
+                    batched_images_gpu = batched_images_cpu.to(used_device)
+                    global_embeddings = self.image_encoder.get_global_embeddings(batched_images_gpu)
+                    #global_embeddings = global_embeddings.detach()
+                    global_embeddings = global_embeddings
+                    del batched_images_gpu, batched_images_cpu
 
-            
-            options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata) 
-            
-            knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_fix(options_embeddings_image=image_options_embedding_dict, 
-                                                                  options_embedding_text=options_embedding_text, 
-                                                                  col_embedding=col_embedding, 
-                                                                  separator_embedding=seperator_embedding,
-                                                                  batch_metadata=batch_metadata,
-                                                                  use_noise='no')
-            
-            
-            
-                    
-            ### CHECK THAT THE FOLLOWING IS LEGIT!
-            h = self.generate_full_batch_sequence_fix(cls_tokens, image_features, knowledge_sequence, text_features)
+                    for batch_idx, option, start, end in slice_metadata:
+                        embeddings = global_embeddings[start:end]
+                        pooled, _ = torch.max(embeddings, dim=0, keepdim=True)
+                        #pooled_embeddings[batch_idx][option] = pooled.clone().detach()
+                        pooled_embeddings[batch_idx][option] = pooled
+                        del embeddings, pooled
+                    image_batches.clear()
+                    slice_metadata.clear()
+                    del global_embeddings, image_batches, slice_metadata
 
+                for batch_idx, single_batch in enumerate(kb_examples):
+                    for option in single_batch:
+                        if option not in pooled_embeddings[batch_idx]:
+                            pooled_embeddings[batch_idx][option] = self.image_encoder.missing_knowledge_embedding
+
+            finally:
+                if was_training:
+                    self.image_encoder.train()
+        # === END produce_option_embeddings_batched ===
+
+        # === INLINE encode_batch_options_batched ===
+        all_options_set = set()
+        for batch in batch_metadata:
+            all_options_set.update(batch['options'])
+        all_options = list(all_options_set)
+
+        encoded = self.question_encoder.tokenizer(all_options, add_special_tokens=False,return_tensors='pt',padding=True)
+        input_ids = encoded['input_ids'].to(used_device)
+        embeddings_layer = self.question_encoder.BERTmodel.get_input_embeddings()
+        option_embeddings = embeddings_layer(input_ids)
+
+        option_to_embedding = {}
+        for i, option in enumerate(all_options):
+            length = encoded['attention_mask'][i].sum().item()
+            emb = option_embeddings[i, :length]
+            emb = emb.unsqueeze(1)
+            option_to_embedding[option] = emb
+
+        batch_options_embeddings = []
+        for batch in batch_metadata:
+            options = batch['options']
+            options_embeddings = {option: option_to_embedding[option] for option in options}
+            batch_options_embeddings.append(options_embeddings)
+
+        column_embedding = self.knowledge_base_processor.__get_column_embedding()
+        sep_embedding = self.knowledge_base_processor.__get_sep_embedding()
+        option_to_embedding.clear()
+        options_embedding_text = batch_options_embeddings
+        col_embedding = column_embedding
+        seperator_embedding = sep_embedding
+        # === END encode_batch_options_batched ===
+
+        # === INLINE generate_knowledge_sequence_fix ===
+        # used_device = next(self.image_encoder.parameters()).device
+        # col_embedding = col_embedding.to(device=used_device)
+        # seperator_embedding = seperator_embedding.to(device=used_device)
+        for batch in range(len(pooled_embeddings)):
+            img_dict = pooled_embeddings[batch]
+            txt_dict = options_embedding_text[batch]
+            for key in img_dict.keys():
+                # img_dict[key] = img_dict[key].to(device=used_device)
+                # txt_dict[key] = txt_dict[key].to(device=used_device)
+                img_dict[key] = img_dict[key]
+                txt_dict[key] = txt_dict[key]
+
+        batch_knowledge_sequence = []
+        batch_knowledge_ttid = []
+
+        for batch_index in range(len(options_embedding_text)):
+            img_options_embedding = pooled_embeddings[batch_index]
+            text_option_embedding = options_embedding_text[batch_index]
+            assert img_options_embedding.keys() == text_option_embedding.keys()
+            total_seq_len = 0
+            for option in batch_metadata[batch_index]['options']:
+                img_emb = img_options_embedding[option]
+                text_emb = text_option_embedding[option]
+                total_seq_len += text_emb.size(0)
+                total_seq_len += col_embedding.size(0)
+                total_seq_len += img_emb.size(0)
+                total_seq_len += seperator_embedding.size(0)
+            ttid_tensor = torch.empty(total_seq_len, dtype=torch.long, device=used_device)
+            pieces = []
+            cursor = 0
+            for option in batch_metadata[batch_index]['options']:
+                text_emb = text_option_embedding[option]
+                img_emb = img_options_embedding[option]
+                pieces.append(text_emb)
+                n_text = text_emb.size(0)
+                ttid_tensor[cursor : cursor + n_text] = 5
+                cursor += n_text
+                pieces.append(col_embedding)
+                n_col = col_embedding.size(0)
+                ttid_tensor[cursor : cursor + n_col] = 5
+                cursor += n_col
+                pieces.append(img_emb)
+                n_img = img_emb.size(0)
+                ttid_tensor[cursor : cursor + n_img] = 6
+                cursor += n_img
+                pieces.append(seperator_embedding)
+                n_sep = seperator_embedding.size(0)
+                ttid_tensor[cursor : cursor + n_sep] = 6
+                cursor += n_sep
+            assert cursor == total_seq_len
+            batch_tensor = torch.cat(pieces, dim=0)
+            batch_knowledge_sequence.append(batch_tensor)
+            batch_knowledge_ttid.append(ttid_tensor)
+            pieces.clear()
+            del pieces
+        knowledge_sequence = batch_knowledge_sequence
+        knowledge_ttid = batch_knowledge_ttid
+        # === END generate_knowledge_sequence_fix ===
+
+        # === INLINE generate_full_batch_sequence_fix ===
+        batch_size = cls_tokens.size(0)
+        hidden_dim_size = cls_tokens.size(-1)
+        sequence_length = self.args.max_position_embeddings
+        h = cls_tokens.new_zeros((batch_size, sequence_length, hidden_dim_size), dtype=dtype, device=used_device)
+
+        for i in range(batch_size):
+            write_pos = 0
+            h[i, write_pos : write_pos+1, :] = cls_tokens[i]
+            write_pos += 1
+            img_feat_i = image_features[i : i+1]
+            img_len = img_feat_i.size(1)
+            remain = sequence_length - write_pos
+            copy_len = min(img_len, remain)
+            if copy_len > 0:
+                h[i, write_pos : write_pos+copy_len, :] = img_feat_i[:, :copy_len, :]
+                write_pos += copy_len
+            know_i = knowledge_sequence[i].permute(1, 0, 2)
+            know_len = know_i.size(1)
+            remain = sequence_length - write_pos
+            copy_len = min(know_len, remain)
+            if copy_len > 0:
+                h[i, write_pos : write_pos+copy_len, :] = know_i[:, :copy_len, :]
+                write_pos += copy_len
+            txt_feat_i = text_features[i : i+1, 1:]
+            txt_len = txt_feat_i.size(1)
+            remain = sequence_length - write_pos
+            copy_len = min(txt_len, remain)
+            if copy_len > 0:
+                h[i, write_pos : write_pos+copy_len, :] = txt_feat_i[:, :copy_len, :]
+                write_pos += copy_len
+        # === END generate_full_batch_sequence_fix ===
+
+        # === INLINE generate_tokentypeid_attnmask_forbatch_fix ===
         if self.args.progressive:
             assert token_type_ids_q is not None
             token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
-            
-            ttid, attention_mask_modified = self.generate_tokentypeid_attnmask_forbatch_fix(h, token_type_ids_q, image_features, knowledge_sequence, attn_mask, knowledge_ttid)
-            
-            
+            sequence_ = h  # [batch_size, seq_len, ...]
+            batch_size = sequence_.size(0)
+            seq_len = sequence_.size(1)
+            num_image_feats = image_features.size(1)
+
+            if not hasattr(self, "_ttids_buffer") or self._ttids_buffer.size() != (batch_size, seq_len):
+                self._ttids_buffer = torch.zeros(batch_size, seq_len, dtype=torch.long, device=used_device)
+                self._mask_buffer = torch.zeros(batch_size, seq_len, dtype=torch.long, device=used_device)
+
+            token_type_ids = self._ttids_buffer
+            modified_attention_mask = self._mask_buffer
+
+            token_type_ids.fill_(0)
+            modified_attention_mask.fill_(0)
+
+            knowledge_ttid_tensors = []
+            for idx in range(batch_size):
+                t = knowledge_ttid[idx]
+                if isinstance(t, torch.Tensor):
+                    knowledge_ttid_tensors.append(t.long().to(used_device))
+                else:
+                    knowledge_ttid_tensors.append(torch.LongTensor(t).to(used_device))
+
+            token_type_ids[:, 0] = 1
+            token_type_ids[:, 1 : 1 + num_image_feats] = 4
+
+            knowledge_lengths = [ks.size(0) for ks in knowledge_sequence]
+            for idx in range(batch_size):
+                Ki = knowledge_lengths[idx]
+                start_i = 1 + num_image_feats
+                end_i = start_i + Ki
+                token_type_ids[idx, start_i : end_i] = knowledge_ttid_tensors[idx]
+                remaining_i = seq_len - end_i
+                if remaining_i > 0:
+                    token_type_ids[idx, end_i : end_i + remaining_i] = token_type_ids_q[idx, 1 : 1 + remaining_i]
+
+            with torch.no_grad():
+                attn_counts = (attn_mask == 1).sum(dim=1)
+                kl_tensor = torch.LongTensor(knowledge_lengths).to(used_device)
+                thresholds = attn_counts + kl_tensor
+                positions = torch.arange(seq_len, device=used_device).unsqueeze(0)
+                mask_bool = positions < thresholds.unsqueeze(1)
+                modified_attention_mask.copy_(mask_bool.long())
+
+            knowledge_ttid_tensors.clear()
+            ttid = token_type_ids
+            attention_mask_modified = modified_attention_mask
+
         else:
             token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
             token_type_ids[:, 0] = 1
             token_type_ids[:, 1:image_features.size(1) + 1] = 0
             token_type_ids[:, image_features.size(1) + 1:] = 1
+            ttid = token_type_ids
+            attention_mask_modified = attn_mask
+        # === END generate_tokentypeid_attnmask_forbatch_fix ===
+
+        out = self.fusion(inputs_embeds=h, attention_mask=attention_mask_modified, token_type_ids=ttid, output_attentions=True)
+        h = out['last_hidden_state']
+        attentions = out['attentions'][0]
+        logits = self.classifier(h.mean(dim=1))
+
+        # Clear
+        for kb_exam in kb_examples:
+            kb_exam.clear()
+        kb_examples.clear()
+
+        for _ in pooled_embeddings:
+            _.clear()
+        pooled_embeddings.clear()
+
+        for _ in options_embedding_text:
+            _.clear()
+        options_embedding_text.clear()
+
+        knowledge_sequence.clear()
+        knowledge_ttid.clear()
+
+        del attention_mask_modified, ttid, kb_examples, pooled_embeddings
+        if not torch.isfinite(logits).all():
+            print(f'{timestamp()}Fusion model produced nan/inf in ints output')
+        return logits, attentions
+
+    
+    
+    ############################################################ WORKING FORWARD PASS
+    # def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
+        
+    #     ## global image embedding serves as positive example in sanity check
+    #     image_features, global_image_embedding = self.image_encoder(img, mode=mode)
+    #     image_features = image_features.detach()
+    #     global_image_embedding = global_image_embedding.detach()
+    #     text_features = self.question_encoder(input_ids, q_attn_mask)
+    #     cls_tokens = text_features[:, 0:1]
+
+    #     # a list of dicts, where each list element represents a batch element, and each dict has options and paths
+    #     kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
+
+
+    #     ##### need to change the representation of the MISSING_KNOWLEDGE embedding
+    #     with torch.no_grad():
+    #         image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
+            
+    #         # ### convert to SANITY EMBEDDINGS
+    #         # for idx, batch in enumerate(batch_metadata):
+    #         #     positive_options = set(batch['positive_option'])
+    #         #     for option,tensor in image_options_embedding_dict[idx].items():
+    #         #         if option in positive_options:
+    #         #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
+    #         #             del tensor
+
+
+            
+    #         options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata) 
+            
+    #         knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_fix(options_embeddings_image=image_options_embedding_dict, 
+    #                                                               options_embedding_text=options_embedding_text, 
+    #                                                               col_embedding=col_embedding, 
+    #                                                               separator_embedding=seperator_embedding,
+    #                                                               batch_metadata=batch_metadata,
+    #                                                               use_noise='no')
+            
+            
+            
+                    
+    #         ### CHECK THAT THE FOLLOWING IS LEGIT!
+    #         h = self.generate_full_batch_sequence_fix(cls_tokens, image_features, knowledge_sequence, text_features)
+
+    #     if self.args.progressive:
+    #         assert token_type_ids_q is not None
+    #         token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+            
+    #         ttid, attention_mask_modified = self.generate_tokentypeid_attnmask_forbatch_fix(h, token_type_ids_q, image_features, knowledge_sequence, attn_mask, knowledge_ttid)
+            
+            
+    #     else:
+    #         token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+    #         token_type_ids[:, 0] = 1
+    #         token_type_ids[:, 1:image_features.size(1) + 1] = 0
+    #         token_type_ids[:, image_features.size(1) + 1:] = 1
 
 
 
 
             
-        out = self.fusion(inputs_embeds=h, attention_mask=attention_mask_modified, token_type_ids=ttid, output_attentions=True)
-        h = out['last_hidden_state']
-        attentions = out['attentions'][0]
-        logits = self.classifier(h.mean(dim=1))
+    #     out = self.fusion(inputs_embeds=h, attention_mask=attention_mask_modified, token_type_ids=ttid, output_attentions=True)
+    #     h = out['last_hidden_state']
+    #     attentions = out['attentions'][0]
+    #     logits = self.classifier(h.mean(dim=1))
         
-        ### clearing stuff
-        for kb_exam in kb_examples:
-            kb_exam.clear()
-        kb_examples.clear()
-        
-        
-        for _ in image_options_embedding_dict:
-            _.clear()
-        image_options_embedding_dict.clear()
-        
-        ## uncomment if using options embed sanity
-        # for _ in options_embedding_img_sanity:
-        #     _.clear()
-        # options_embedding_img_sanity.clear()
-        
-        for _ in options_embedding_text:
-            _.clear()
-        options_embedding_text.clear()
-        
-        knowledge_sequence.clear()
-        knowledge_ttid.clear()
+    #     ### clearing stuff
+    #     for kb_exam in kb_examples:
+    #         kb_exam.clear()
+    #     kb_examples.clear()
         
         
-        del attention_mask_modified, ttid, kb_examples, image_options_embedding_dict #, options_embedding_img_sanity
+    #     for _ in image_options_embedding_dict:
+    #         _.clear()
+    #     image_options_embedding_dict.clear()
+        
+    #     ## uncomment if using options embed sanity
+    #     # for _ in options_embedding_img_sanity:
+    #     #     _.clear()
+    #     # options_embedding_img_sanity.clear()
+        
+    #     for _ in options_embedding_text:
+    #         _.clear()
+    #     options_embedding_text.clear()
+        
+    #     knowledge_sequence.clear()
+    #     knowledge_ttid.clear()
+        
+        
+    #     del attention_mask_modified, ttid, kb_examples, image_options_embedding_dict #, options_embedding_img_sanity
         
         
         
         
-        if not torch.isfinite(logits).all():
-            print(f'{timestamp()}Fusion model produced nan/inf in ints output')
+    #     if not torch.isfinite(logits).all():
+    #         print(f'{timestamp()}Fusion model produced nan/inf in ints output')
 
-        return logits, attentions
+    #     return logits, attentions
     
     # ## Timed
     # def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
