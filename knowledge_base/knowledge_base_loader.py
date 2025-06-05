@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 import cv2
 from torchvision.transforms.functional import to_pil_image
 from concurrent.futures import ThreadPoolExecutor
@@ -230,49 +231,55 @@ class CachedKnowledgeBase:
         self.norm_transform = norm_transform
         self.kb = load_json_file(Path(knowledge_base))
         self.labels_encodings = {}
+        self.CONSTANTS = Constants(Mode.CLUSTER)
+        self.NUM_EXAMPLES = 5
         
-        self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes', 'lung_body_regions_degree', 
+        self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes', 'lung_body_regions_degree',
+                                 'lung_body regions_localization', 'lung_body regions_attributes', 'lung_body regions_degree',  
                          'trachea_body_regions_attributes', 'trachea_body_regions_degree',
-                         'pleura_body_regions_localization', 'pleura_body_regions_attributes','pleura_body_regions_degree',}
+                         'trachea_body regions_attributes', 'trachea_body regions_degree',
+                         'pleura_body_regions_localization', 'pleura_body_regions_attributes','pleura_body_regions_degree',
+                         'pleura_body regions_localization', 'pleura_body regions_attributes','pleura_body regions_degree'}
         
-        self.special_paths_l1 = {'lung_body_regions','lung_body_regions','trachea_body_regions','trachea_body_regions','pleura_body_regions','pleura_body_regions'}
+        self.special_paths_l1 = {'lung_body_regions','lung_body regions','trachea_body_regions','trachea_body regions','pleura_body_regions','pleura_body regions'}
         
         self.path_lookup = self.__generate_path_lookup()
         
-        # with open(f'data/radrestruct/path_lookup.json', 'r') as f:
-        #     self.path_lookup = json.load(f)
-        
-        ### Load in full size, then resize
-        # print("Preloading knowledge base...")
-        # for idx, (kb_key, image_paths) in enumerate(self.kb.items()):
-        #     self.image_cache[kb_key] = []
-        #     for img_path in image_paths[:5]:
-        #         image = Image.open(img_path)
-        #         image_tensor = self.transform(image)  # e.g., Resize + ToTensor + Normalize
-        #         self.image_cache[kb_key].append(image_tensor)
-        #     print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
         
         ## Load in full size, then resize
         print("Preloading knowledge base...")
         for idx, (kb_key, image_paths) in enumerate(self.kb.items()):
-            if idx >= 0:
-                self.image_cache[kb_key] = []
-                for kb_img_path in image_paths[:5]:
-                    ####### Load using OpenCV - load, resize, transform
-                    #img = self.load_kb_image_cv2(kb_img_path, self.img_transform, self.norm_transform)
-                    #self.image_cache[kb_key].append(img)
-                    
-                    ####### Load ready images using PIL
+            self.image_cache[kb_key] = []
+
+            # lung_signs_yes
+            if self.is_l1_positive_key(kb_key):
+                # lung_signs_airspace disease_yes, lung_signs_consolication_yes, lung_signs_deformity_yes ...
+                l2_positive_paths = self.CONSTANTS.load_l1_to_l2_mapping_dict()[kb_key]
+
+
+                for i in range(self.NUM_EXAMPLES):
+                    composite_image = []
+                    # a list holding images for each positive l2 path for a given positive l1 path
+                    for l2_positive_path in l2_positive_paths:
+                        if len(self.kb[l2_positive_path]) > 0:
+                            # a single image path, randomly sampled
+                            l2_positive_sample_for_path = random.choice(self.kb[l2_positive_path])
+                            if l2_positive_sample_for_path:
+                                img = self.load_kb_image_PIL(l2_positive_sample_for_path, self.img_transform,
+                                                             self.norm_transform)
+                                composite_image.append(img)
+
+                ## need to create a batch of images, to be fed to the image encoder later to obtain image features
+                ##  composite_image
+                    self.image_cache[kb_key].append(composite_image)
+
+
+            else:
+                for kb_img_path in image_paths[:self.NUM_EXAMPLES]:
                     img = self.load_kb_image_PIL(kb_img_path, self.img_transform, self.norm_transform)
                     self.image_cache[kb_key].append(img)
-                    
-                    ####### ---- SAVE IMAGES INSTEAD
-                    #self.save_kb_images_cv2(kb_img_path, self.img_transform, self.norm_transform)
-                    
-                #self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
-                print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
-            
-        print(f"NUM OF IMAGES: {sum((len(value) for key,value in self.image_cache.items()))}")
+            # self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
+            print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
             
     # def get_images_for_paths(self, batch_metadata):
     #     batch_examples = []
@@ -299,19 +306,63 @@ class CachedKnowledgeBase:
     #         batch_examples.append(examples)
     #     return batch_examples
     
+    def is_l1_positive_key(self,kb_key):
+        split_path = kb_key.split("_")
+        last_element = split_path[-1]
+        path_length = len(split_path)
+        if 'infos' in kb_key:
+            return path_length == 3 and last_element == 'yes'
+        else:
+            return path_length == 3 and last_element == 'yes'
+    
     
     ### given a path - return the knowledge base examples for 
     ## that path - 
-    def get_images_for_paths(self, batch_metadata):
+    def get_images_for_paths(self, batch_metadata, sampled = True, num_samples = 3):
+        # batch_examples = []
+        # for meta in batch_metadata:
+        #     path = meta["path"]
+        #     options = meta["options"]
+        #     examples = {}
+        #     for option in options:
+        #         lookup_tuple = (path,option)
+        #         if is_l1_path(path) and option == 'yes':
+        #             full_kb_image_samples = self.image_cache.get(self.path_lookup[lookup_tuple], [])
+        #             op = self.image_cache.get(self.path_lookup[lookup_tuple], [])
+        #             if len(full_kb_image_samples) >= num_samples:
+        #                 examples[option] = random.sample(full_kb_image_samples, num_samples)
+        #             else:
+        #                 examples[option] = random.sample(full_kb_image_samples, len(full_kb_image_samples))
+        #         else:
+        #     examples[option] = self.image_cache.get(self.path_lookup[lookup_tuple], [])
+        #     batch_examples.append(examples)
         batch_examples = []
         for meta in batch_metadata:
             path = meta["path"]
             options = meta["options"]
             examples = {}
             for option in options:
-                lookup_tuple = (path,option)
+                lookup_tuple = (path, option)
+                full_kb_image_samples = self.image_cache.get(self.path_lookup[lookup_tuple], [])
                 
-                examples[option] = self.image_cache.get(self.path_lookup[lookup_tuple], [])
+                
+                path_no_underscore = path.replace("body_region", "body region")
+                path_no_underscore = path_no_underscore.replace("body_regions", "body regions")
+                
+                
+                
+                
+                
+                
+                if (len(path_no_underscore.split("_")) == 2 and option=='yes') and (path not in self.special_paths_l1):
+                    samples_count = min(1, len(full_kb_image_samples))
+                    samples = random.sample(full_kb_image_samples, samples_count)
+                    ## samples[0] is a list of tensors
+                    examples[option] = [tensor for tensor in samples[0]]
+                else:
+                    samples_count = min(num_samples, len(full_kb_image_samples))
+                    examples[option] = random.sample(full_kb_image_samples, samples_count)
+
             batch_examples.append(examples)
         return batch_examples
     
@@ -510,8 +561,8 @@ class KnowledgeBasePostProcessor:
     def __init__(self, text_encoder, image_encoder) -> None:
         self.text_encoder = text_encoder
         self.image_encoder = image_encoder
-        self.column_embedding = self.__get_column_embedding
-        self.sep_embedding = self.__get_sep_embedding
+        # self.column_embedding = self._get_column_embedding()
+        # self.sep_embedding = self._get_sep_embedding()
         self.label_embeddings = {}
         self.label_embeddings = self.__generate_options_embeddings()
         
@@ -576,8 +627,8 @@ class KnowledgeBasePostProcessor:
         options_embeddings = {}
         positive_ans_embeddings = self.text_encoder.encode_phrases(positive_answers)
         neg_ans_embeddings = self.text_encoder.encode_phrases(negative_answers)
-        column_embedding = self.__get_column_embedding()
-        sep_embedding = self.__get_sep_embedding()
+        column_embedding = self._get_column_embedding()
+        sep_embedding = self._get_sep_embedding()
         
         return positive_ans_embeddings, neg_ans_embeddings, column_embedding, sep_embedding
     
@@ -593,8 +644,8 @@ class KnowledgeBasePostProcessor:
             options_embeddings[option] = self.__get_embedding(option)
         
         #options_embeddings = self.text_encoder.encode_options(options)
-        column_embedding = self.__get_column_embedding()
-        sep_embedding = self.__get_sep_embedding()
+        column_embedding = self._get_column_embedding()
+        sep_embedding = self._get_sep_embedding()
         
         return options_embeddings, column_embedding, sep_embedding
     
@@ -612,8 +663,8 @@ class KnowledgeBasePostProcessor:
             
         
         #options_embeddings = self.text_encoder.encode_options(options)
-        column_embedding = self.__get_column_embedding()
-        sep_embedding = self.__get_sep_embedding()
+        column_embedding = self._get_column_embedding()
+        sep_embedding = self._get_sep_embedding()
         
         return batch_options_embeddings, column_embedding, sep_embedding
     
@@ -654,8 +705,8 @@ class KnowledgeBasePostProcessor:
             #options_embeddings.clear()
 
         # Example: handle col_embedding/sep_embedding as before, not batched here
-        column_embedding = self.__get_column_embedding()  # recompute per forward
-        sep_embedding = self.__get_sep_embedding()
+        column_embedding = self._get_column_embedding()  # recompute per forward
+        sep_embedding = self._get_sep_embedding()
         
         option_to_embedding.clear()
         del option_to_embedding
@@ -680,7 +731,7 @@ class KnowledgeBasePostProcessor:
         
         return batch_options_embeddings, column_embedding, sep_embedding
     
-    def __get_column_embedding(self):
+    def _get_column_embedding(self):
         colon_token = ":"
         tokenized = self.text_encoder.tokenizer(colon_token, add_special_tokens=False)
         colon_token_id = tokenized["input_ids"][0]
@@ -690,7 +741,7 @@ class KnowledgeBasePostProcessor:
                                                          .to(device=next(self.text_encoder.parameters()).device))
         return colon_embedding.unsqueeze(0).unsqueeze(0)
         
-    def __get_sep_embedding(self):
+    def _get_sep_embedding(self):
         text_encoder_embeddings_matrix = self.text_encoder.BERTmodel.get_input_embeddings()
         sep_token_embedding = text_encoder_embeddings_matrix(torch.tensor(self.text_encoder.tokenizer.sep_token_id)
                                                          .to(device=next(self.text_encoder.parameters()).device))
