@@ -779,9 +779,9 @@ class Model(nn.Module):
     def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
         
         ## global image embedding serves as positive example in sanity check
-        image_features, global_image_embedding = self.image_encoder(img, mode=mode)
-        image_features = image_features.detach()
-        global_image_embedding = global_image_embedding.detach()
+        image_features = self.image_encoder(img, mode=mode)
+        #image_features = image_features.detach()
+        #global_image_embedding = global_image_embedding.detach()
         text_features = self.question_encoder(input_ids, q_attn_mask)
         cls_tokens = text_features[:, 0:1]
 
@@ -790,33 +790,33 @@ class Model(nn.Module):
 
 
         ##### need to change the representation of the MISSING_KNOWLEDGE embedding
-        with torch.no_grad():
-            image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
-            
-            # ### convert to SANITY EMBEDDINGS
-            # for idx, batch in enumerate(batch_metadata):
-            #     positive_options = set(batch['positive_option'])
-            #     for option,tensor in image_options_embedding_dict[idx].items():
-            #         if option in positive_options:
-            #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
-            #             del tensor
+        #with torch.no_grad():
+        image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
+        
+        # ### convert to SANITY EMBEDDINGS
+        # for idx, batch in enumerate(batch_metadata):
+        #     positive_options = set(batch['positive_option'])
+        #     for option,tensor in image_options_embedding_dict[idx].items():
+        #         if option in positive_options:
+        #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
+        #             del tensor
 
 
-            
-            options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata)
-            
-            knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_fix(options_embeddings_image=image_options_embedding_dict,
-                                                                  options_embedding_text=options_embedding_text,
-                                                                  col_embedding=col_embedding,
-                                                                  separator_embedding=seperator_embedding,
-                                                                  batch_metadata=batch_metadata,
-                                                                  use_noise='no')
-            
-            
-            
-                    
-            ### CHECK THAT THE FOLLOWING IS LEGIT!
-            h = self.generate_full_batch_sequence_fix(cls_tokens, image_features, knowledge_sequence, text_features)
+        
+        options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata)
+        
+        knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_fix(options_embeddings_image=image_options_embedding_dict,
+                                                                options_embedding_text=options_embedding_text,
+                                                                col_embedding=col_embedding,
+                                                                separator_embedding=seperator_embedding,
+                                                                batch_metadata=batch_metadata,
+                                                                use_noise='no')
+        
+        
+        
+                
+        ### CHECK THAT THE FOLLOWING IS LEGIT!
+        h = self.generate_full_batch_sequence_fix(cls_tokens, image_features, knowledge_sequence, text_features)
 
         if self.args.progressive:
             assert token_type_ids_q is not None
@@ -1051,14 +1051,13 @@ class Model(nn.Module):
                 batched_images_gpu = batched_images_cpu.to(used_device)# shape: (total_images, C, H, W)
                 with torch.no_grad():
                     global_embeddings = image_encoder.get_global_embeddings(batched_images_gpu)
-                    global_embeddings = global_embeddings.detach()
                     del batched_images_gpu, batched_images_cpu
             
             
                 for batch_idx, option, start, end in slice_metadata:
                     embeddings = global_embeddings[start:end]  # shape: (N_i, D)
                     pooled, _ = torch.max(embeddings, dim=0, keepdim=True)  # (1, D)
-                    pooled_embeddings[batch_idx][option] = pooled.clone().detach()
+                    pooled_embeddings[batch_idx][option] = pooled
                     del embeddings, pooled
                 image_batches.clear()
                 slice_metadata.clear()

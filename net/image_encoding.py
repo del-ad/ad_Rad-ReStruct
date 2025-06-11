@@ -207,7 +207,6 @@ class ImageEncoderEfficientNet(nn.Module):
 
     ### New
     def forward(self, img, mode='train'):
-        was_training = self.training
         ### Traces    
         # try:
         #     self.eval()
@@ -257,48 +256,43 @@ class ImageEncoderEfficientNet(nn.Module):
         #     if was_training:
         #         self.train()
                 
-        try:
-            self.eval()
-            with torch.no_grad():                
-                x = self.model(img)
-                x = self.rescale_conv(x)
-                x = self.rescale_pool(x)
-                # Clamp and sanitize values before global mean (important for AMP)
-                x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-                x = torch.clamp(x, min=-1e4, max=1e4)
+        x = self.model(img)
+        x = self.rescale_conv(x)
+        x = self.rescale_pool(x)
+        # Clamp and sanitize values before global mean (important for AMP)
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
+        x = torch.clamp(x, min=-1e4, max=1e4)
 
-                # Global embedding (average over spatial dimensions) - Global everage pooling
-                # global_embedding = x.mean(dim=[2, 3])  # (B, hidden_size)
-                # global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
-                
-                # Global embedding (max over spatial dimensions) - Global everage pooling
-                global_embedding = x.amax(dim=[2, 3])  # (B, hidden_size)
-                global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
+        # Global embedding (average over spatial dimensions) - Global everage pooling
+        # global_embedding = x.mean(dim=[2, 3])  # (B, hidden_size)
+        # global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
+        
+        # Global embedding (max over spatial dimensions) - Global everage pooling
+        # global_embedding = x.amax(dim=[2, 3])  # (B, hidden_size)
+        # global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
 
-                # Token embedding (flatten spatial dimensions into sequence)
-                image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
-        finally:
-            if was_training:
-                self.train()
+        # Token embedding (flatten spatial dimensions into sequence)
+        image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
                 
         if not torch.isfinite(image_tokens).all():
             print(f'{timestamp()}Image encoder produced nan/inf in image_tokens')
 
-        if not torch.isfinite(global_embedding).all():
-            print(f'{timestamp()}Image encoder produced nan/inf in global_embedding')
+        # if not torch.isfinite(global_embedding).all():
+        #     print(f'{timestamp()}Image encoder produced nan/inf in global_embedding')
 
-        return image_tokens, global_embedding
+        return image_tokens #, global_embedding
     
+    @torch.no_grad()
     def get_global_embeddings(self, img):
         was_training = self.training
             
         try:
             self.eval()
-            
-            x = self.model(img)
-            #x = self.rescale_conv(x)
-            x = self.rescale_conv(x)
-            x = self.rescale_pool(x)
+            with torch.autocast('cuda', torch.float16):
+                x = self.model(img)
+                #x = self.rescale_conv(x)
+                x = self.rescale_conv(x)
+                x = self.rescale_pool(x)
 
             # Clamp and sanitize values before global mean (important for AMP)
             x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
@@ -314,55 +308,7 @@ class ImageEncoderEfficientNet(nn.Module):
         finally:
             if was_training:
                 self.train()
-        
-                
-        # try:
-        #     self.eval()
-        #     with torch.no_grad():
-        #         img1_b4_model = img[0:1]
-        #         img2_b4_model = img[1:2]
-        #         print(f"Before model: {((img1_b4_model - img2_b4_model).abs().max())}")
-                
-        #         x = self.model(img)
-        #         img1_b4_rescale = x[0:1]
-        #         img2_b4_rescale = x[1:2]
-        #         print(f"After model: {((img1_b4_rescale - img2_b4_rescale).abs().max())}")
-        #         #x = self.rescale_conv(x)
-        #         x = self.rescale(x)
-                
-        #         img1_after_rescale = x[0:1]
-        #         img2_after_rescale = x[1:2]
-        #         print(f"After rescale: {((img1_after_rescale - img2_after_rescale).abs().max())}")
-                
-        #         x = self.rescale_pool(x)
-                
-        #         img1_after_pool = x[0:1]
-        #         img2_after_pool = x[1:2]
-        #         print(f"After pool: {((img1_after_pool - img2_after_pool).abs().max())}")
-        #         # Clamp and sanitize values before global mean (important for AMP)
-        #         x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-                
-        #         img1_after_nan = x[0:1]
-        #         img2_after_nan = x[1:2]
-        #         print(f"After nan: {((img1_after_nan - img2_after_nan).abs().max())}")
-        #         x = torch.clamp(x, min=-1e4, max=1e4)
-                
-        #         img1_after_clamp = x[0:1]
-        #         img2_after_clamp = x[1:2]
-        #         print(f"After clamp: {((img1_after_clamp - img2_after_clamp).abs().max())}")
-        #         # Global embedding (average over spatial dimensions) - Global everage pooling
-        #         global_embedding = x.amax(dim=[2, 3])  # (B, hidden_size)
-                
-        #         img1_after_ge = x[0:1]
-        #         img2_after_ge = x[1:2]
-        #         print(f"After global embedding: {((img1_after_ge - img2_after_ge).abs().max())}")
-        #         global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
-
-        #         # Token embedding (flatten spatial dimensions into sequence)
-        #         image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
-        # finally:
-        #     if was_training:
-        #         self.train()        
+             
 
         return global_embedding
     
