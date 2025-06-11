@@ -355,7 +355,7 @@ class CachedKnowledgeBase:
                 
                 
                 if (len(path_no_underscore.split("_")) == 2 and option=='yes') and (path not in self.special_paths_l1):
-                    samples_count = min(1, len(full_kb_image_samples))
+                    samples_count = min(num_samples, len(full_kb_image_samples))
                     samples = random.sample(full_kb_image_samples, samples_count)
                     ## samples[0] is a list of tensors
                     examples[option] = [tensor for tensor in samples[0]]
@@ -448,8 +448,8 @@ class CachedKnowledgeBase:
         # Convert NumPy array (HWC, uint8) to PIL Image
         img = Image.fromarray(img)
         
-        pil_img = to_pil_image(img)
-        img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
+        #pil_img = to_pil_image(img)
+        #img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
 
         # Now apply img_tfm (e.g., Resize/Crop etc.)
         #img = img_tfm(img)
@@ -473,7 +473,6 @@ class CachedKnowledgeBase:
         # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
         # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.jpeg")
         # # self.save_normalized_tensor_image(img, self.norm_transform, "img_1.jpeg" ) or png
-        img.requires_grad = False
         return img
     
     def load_kb_image_PIL(self, image_path, img_tfm, norm_tfm, resize_size=(488, 488)):
