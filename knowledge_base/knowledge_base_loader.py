@@ -1,5 +1,6 @@
 import argparse
 import json
+import pickle
 import random
 import cv2
 from torchvision.transforms.functional import to_pil_image
@@ -281,30 +282,6 @@ class CachedKnowledgeBase:
             # self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
             print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
             
-    # def get_images_for_paths(self, batch_metadata):
-    #     batch_examples = []
-    #     for meta in batch_metadata:
-    #         path = meta["path"]
-    #         options = meta["options"]
-    #         examples = {}
-    #         for option in options:
-    #             key = f"{path}_{option}"  # Apply same rules as your special handling
-    #             if path in self.special_paths:
-    #                 path_elements = path.split("_")
-    #                 last = path_elements[-1]
-    #                 without_last = path_elements[0:-1]
-    #                 without_last.append(path_elements[0])
-    #                 without_last.append(last)
-                    
-    #                 #path_elements.append(path_elements[0])
-    #                 kb_path = f"{'_'.join(without_last)}_{option}"
-    #             kb_path = key.replace('body_region', 'body region')
-    #             kb_path = kb_path.replace('body_regions', 'body regions')
-                
-                
-    #             examples[option] = self.image_cache.get(kb_path, [])
-    #         batch_examples.append(examples)
-    #     return batch_examples
     
     def is_l1_positive_key(self,kb_key):
         split_path = kb_key.split("_")
@@ -319,23 +296,6 @@ class CachedKnowledgeBase:
     ### given a path - return the knowledge base examples for 
     ## that path - 
     def get_images_for_paths(self, batch_metadata, sampled = True, num_samples = 3):
-        # batch_examples = []
-        # for meta in batch_metadata:
-        #     path = meta["path"]
-        #     options = meta["options"]
-        #     examples = {}
-        #     for option in options:
-        #         lookup_tuple = (path,option)
-        #         if is_l1_path(path) and option == 'yes':
-        #             full_kb_image_samples = self.image_cache.get(self.path_lookup[lookup_tuple], [])
-        #             op = self.image_cache.get(self.path_lookup[lookup_tuple], [])
-        #             if len(full_kb_image_samples) >= num_samples:
-        #                 examples[option] = random.sample(full_kb_image_samples, num_samples)
-        #             else:
-        #                 examples[option] = random.sample(full_kb_image_samples, len(full_kb_image_samples))
-        #         else:
-        #     examples[option] = self.image_cache.get(self.path_lookup[lookup_tuple], [])
-        #     batch_examples.append(examples)
         batch_examples = []
         for meta in batch_metadata:
             path = meta["path"]
@@ -556,6 +516,139 @@ class CachedKnowledgeBase:
         pil_img = to_pil_image(unnorm_img)  # converts [C, H, W] float tensor to PIL
         pil_img.save(save_path)
 ## should convert img -> image embedding, text -> text embedding
+
+class PrecomputedKnowledgeBase:
+    def __init__(self, knowledge_base, full_transform, img_transform, norm_transform, precomputed_path, mode='normal'):
+        self.image_cache = {}
+        self.transform = full_transform
+        self.img_transform = img_transform
+        self.norm_transform = norm_transform
+        self.kb = load_json_file(Path(knowledge_base))
+        self.labels_encodings = {}
+        self.CONSTANTS = Constants(Mode.LOCAL)
+        self.NUM_EXAMPLES = 5
+        self.NUM_EXAMPLES_FOR_COMPOSITE_IMAGE = 3
+        self.precomputed_path = precomputed_path
+
+        self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes',
+                                 'lung_body_regions_degree',
+                                 'lung_body regions_localization', 'lung_body regions_attributes',
+                                 'lung_body regions_degree',
+                                 'trachea_body_regions_attributes', 'trachea_body_regions_degree',
+                                 'trachea_body regions_attributes', 'trachea_body regions_degree',
+                                 'pleura_body_regions_localization', 'pleura_body_regions_attributes',
+                                 'pleura_body_regions_degree',
+                                 'pleura_body regions_localization', 'pleura_body regions_attributes',
+                                 'pleura_body regions_degree'}
+
+        self.special_paths_l1 = {'lung_body_regions', 'lung_body regions', 'trachea_body_regions',
+                                 'trachea_body regions', 'pleura_body_regions', 'pleura_body regions'}
+
+        self.path_lookup = self.__generate_path_lookup()
+
+        with open(self.precomputed_path, 'rb') as f:
+            self.precomputed_embeddings = pickle.load(f)
+
+        for path, items_list in self.precomputed_embeddings.items():
+            # Only initialize the cache list if it doesn't already exist
+            if path not in self.image_cache:
+                self.image_cache[path] = []
+            for item in items_list:
+                self.image_cache[path].append(torch.from_numpy(item))
+
+
+    def is_l1_positive_key(self, kb_key):
+        split_path = kb_key.split("_")
+        last_element = split_path[-1]
+        path_length = len(split_path)
+        if 'infos' in kb_key:
+            return path_length == 3 and last_element == 'yes'
+        else:
+            return path_length == 3 and last_element == 'yes'
+
+    ### given a path - return the knowledge base examples for
+    ## that path -
+    def get_images_for_paths(self, batch_metadata, sampled=True, num_samples=3):
+        batch_examples = []
+        for meta in batch_metadata:
+            path = meta["path"]
+            options = meta["options"]
+            examples = {}
+            for option in options:
+                lookup_tuple = (path, option)
+                full_kb_image_samples = self.image_cache.get(self.path_lookup[lookup_tuple], [])
+
+                path_no_underscore = path.replace("body_region", "body region")
+                path_no_underscore = path_no_underscore.replace("body_regions", "body regions")
+
+                samples_count = min(self.NUM_EXAMPLES, len(full_kb_image_samples))
+                samples = random.sample(full_kb_image_samples, samples_count)
+                examples[option] = samples
+
+            batch_examples.append(examples)
+        return batch_examples
+
+    def __generate_path_lookup(self, ):
+        path_dict = {}
+        for mode in ['train', 'val', 'test']:
+            reports = sorted(os.listdir(f'data/radrestruct/{mode}_qa_pairs'))
+            # all images corresponding to reports in radrestruct/{split}_qa_pairs
+            for report in reports:
+                with open(f'data/radrestruct/{mode}_qa_pairs/{report}', 'r') as f:
+                    qa_pairs = json.load(f)
+
+                    for qa_pair in qa_pairs:
+                        info = qa_pair[3]
+                        base_path = info['path']
+                        path_options = info['options']
+                        for option in path_options:
+                            path = f"{base_path}_{option}"
+                            kb_path = f"{base_path}_{option}"
+
+                            ### need to add lung/pleura/trachea ->lung_body_regions ->lung_body_regions_lung
+                            new_base = None
+                            if base_path in self.special_paths_l3:
+                                path_elements = base_path.split("_")
+                                last = path_elements[-1]
+                                without_last = path_elements[0:-1]
+                                without_last.append(path_elements[0])
+                                without_last.append(last)
+                                new_base = str("_".join(without_last))
+                                kb_path = f"{new_base}_{option}"
+
+                                # if last != 'yes' and last != 'no':
+                                #     without_last.append(last)
+
+                            if ((base_path in self.special_paths_l1) and (option in {'yes', 'no'})):
+                                path_elements = base_path.split("_")
+                                path_elements.append(path_elements[0])
+                                # without_last = path_elements
+                                new_base = str("_".join(path_elements))
+
+                                # path_elements.append(path_elements[0])
+                                kb_path = f"{new_base}_{option}"
+                                # kb_orig = str(kb_orig)
+
+                            kb_path = kb_path.replace('body_region', 'body region')
+                            kb_path = kb_path.replace('body_regions', 'body regions')
+                            path_dict[(base_path, option)] = kb_path
+                            if 'body_regions' in base_path or 'body_region' in base_path:
+                                base_path_br = str(base_path)
+                                base_path_br = base_path_br.replace('body_region', 'body region')
+                                base_path_br = base_path_br.replace('body_regions', 'body regions')
+                                path_dict[(base_path_br, option)] = kb_path
+                            if new_base:
+                                path_dict[(new_base, option)] = kb_path
+                                new_base = new_base.replace('body_region', 'body region')
+                                new_base = new_base.replace('body_regions', 'body regions')
+                                path_dict[(new_base, option)] = kb_path
+
+                            # kb_path = kb_path.replace('body_region', 'body region')
+                            # kb_path = kb_path.replace('body_regions', 'body regions')
+                            # unique_paths.add(path)
+
+        return path_dict
+
 class KnowledgeBasePostProcessor:
     def __init__(self, text_encoder, image_encoder) -> None:
         self.text_encoder = text_encoder
@@ -712,6 +805,14 @@ class KnowledgeBasePostProcessor:
 
         return batch_options_embeddings, column_embedding, sep_embedding
     
+    def encode_batch_options_precomputed(self, batch_metadata):
+        text_options_embeddings = {}
+        for batch_index, item in enumerate(batch_metadata):
+            for option in item['options']:
+                text_options_embeddings[batch_index][option] = self.text_options_embeddings[option]
+
+        return text_options_embeddings, self.text_options_embeddings['colon_token'], self.text_options_embeddings['sep_token']
+    
     ### given a batch , produce the option -> embedding dict
     def encode_batch_options_fast(self, batch_metadata: List[Dict]) -> Tuple[List[Dict[str, List[torch.Tensor]]], torch.Tensor, torch.Tensor]:
         
@@ -743,6 +844,12 @@ class KnowledgeBasePostProcessor:
     def _get_sep_embedding(self):
         text_encoder_embeddings_matrix = self.text_encoder.BERTmodel.get_input_embeddings()
         sep_token_embedding = text_encoder_embeddings_matrix(torch.tensor(self.text_encoder.tokenizer.sep_token_id)
+                                                         .to(device=next(self.text_encoder.parameters()).device))
+        return sep_token_embedding.unsqueeze(0).unsqueeze(0)
+    
+    def _get_pad_embedding(self):
+        text_encoder_embeddings_matrix = self.text_encoder.BERTmodel.get_input_embeddings()
+        sep_token_embedding = text_encoder_embeddings_matrix(torch.tensor(self.text_encoder.tokenizer.pad_token_id)
                                                          .to(device=next(self.text_encoder.parameters()).device))
         return sep_token_embedding.unsqueeze(0).unsqueeze(0)
     
@@ -794,6 +901,186 @@ class KnowledgeBasePostProcessor:
         tensor = torch.tensor(list, dtype=torch.long, device=device).unsqueeze(0)
         return tensor.to(device=device, dtype=torch.long)
     
+class ImageMoverFromIndexFile:
+    def __init__(self, knowledge_base, full_transform, img_transform, norm_transform):
+        self.image_cache = {}
+        self.transform = full_transform
+        self.img_transform = img_transform
+        self.norm_transform = norm_transform
+        self.kb = load_json_file(Path(knowledge_base))
+        self.labels_encodings = {}
+        self.CONSTANTS = Constants(Mode.CLUSTER)
+        self.NUM_EXAMPLES = 5
+        
+        self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes', 'lung_body_regions_degree',
+                                 'lung_body regions_localization', 'lung_body regions_attributes', 'lung_body regions_degree',  
+                         'trachea_body_regions_attributes', 'trachea_body_regions_degree',
+                         'trachea_body regions_attributes', 'trachea_body regions_degree',
+                         'pleura_body_regions_localization', 'pleura_body_regions_attributes','pleura_body_regions_degree',
+                         'pleura_body regions_localization', 'pleura_body regions_attributes','pleura_body regions_degree'}
+        
+        self.special_paths_l1 = {'lung_body_regions','lung_body regions','trachea_body_regions','trachea_body regions','pleura_body_regions','pleura_body regions'}
+        
+        self.path_lookup = self.__generate_path_lookup()
+        
+        
+        ## Load in full size, then resize
+        print("Preloading knowledge base...")
+        for idx, (kb_key, image_paths) in enumerate(self.kb.items()):
+            self.image_cache[kb_key] = []
+
+            # lung_signs_yes
+            if self.is_l1_positive_key(kb_key):
+                # lung_signs_airspace disease_yes, lung_signs_consolication_yes, lung_signs_deformity_yes ...
+                l2_positive_paths = self.CONSTANTS.load_l1_to_l2_mapping_dict()[kb_key]
+
+
+                for i in range(self.NUM_EXAMPLES):
+                    composite_image = []
+                    # a list holding images for each positive l2 path for a given positive l1 path
+                    for l2_positive_path in l2_positive_paths:
+                        if len(self.kb[l2_positive_path]) > 0:
+                            # a single image path, randomly sampled
+                            l2_positive_sample_for_path = random.choice(self.kb[l2_positive_path])
+                            if l2_positive_sample_for_path:
+                                img = self.save_kb_images_cv2(l2_positive_sample_for_path, self.img_transform,
+                                                             self.norm_transform)
+                                composite_image.append(img)
+
+                ## need to create a batch of images, to be fed to the image encoder later to obtain image features
+                ##  composite_image
+                    self.image_cache[kb_key].append(composite_image)
+
+
+            else:
+                for kb_img_path in image_paths[:self.NUM_EXAMPLES]:
+                    img = self.save_kb_images_cv2(kb_img_path, self.img_transform, self.norm_transform)
+                    self.image_cache[kb_key].append(img)
+            # self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
+            print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
+            
+    
+    def is_l1_positive_key(self,kb_key):
+        split_path = kb_key.split("_")
+        last_element = split_path[-1]
+        path_length = len(split_path)
+        if 'infos' in kb_key:
+            return path_length == 3 and last_element == 'yes'
+        else:
+            return path_length == 3 and last_element == 'yes'
+    
+    
+    
+    def __generate_path_lookup(self,):
+        path_dict = {}
+        for mode in ['train', 'val', 'test']:
+            reports = sorted(os.listdir(f'data/radrestruct/{mode}_qa_pairs'))
+            # all images corresponding to reports in radrestruct/{split}_qa_pairs
+            for report in reports:
+                with open(f'data/radrestruct/{mode}_qa_pairs/{report}', 'r') as f:
+                    qa_pairs = json.load(f)
+                    
+                    for qa_pair in qa_pairs:
+                        info = qa_pair[3]
+                        base_path = info['path']
+                        path_options = info['options']
+                        for option in path_options:
+                            path = f"{base_path}_{option}"
+                            kb_path = f"{base_path}_{option}"
+                            
+                            ### need to add lung/pleura/trachea ->lung_body_regions ->lung_body_regions_lung
+                            new_base = None
+                            if base_path in self.special_paths_l3:
+                                path_elements = base_path.split("_")
+                                last = path_elements[-1]
+                                without_last = path_elements[0:-1]
+                                without_last.append(path_elements[0])
+                                without_last.append(last)
+                                new_base = str("_".join(without_last))
+
+                                # if last != 'yes' and last != 'no':
+                                #     without_last.append(last)
+                            
+                            if ((base_path in self.special_paths_l1) and (option in {'yes','no'})):
+                                path_elements = base_path.split("_")
+                                path_elements.append(path_elements[0])
+                                #without_last = path_elements
+                                new_base = str("_".join(path_elements))
+
+
+                        
+                        #path_elements.append(path_elements[0])
+                                kb_path = f"{new_base}_{option}"
+                                #kb_orig = str(kb_orig)
+
+                            kb_path = kb_path.replace('body_region', 'body region')
+                            kb_path = kb_path.replace('body_regions', 'body regions')
+                            path_dict[(base_path,option)] = kb_path
+                            if 'body_regions' in base_path or 'body_region' in base_path:
+                                base_path_br = str(base_path)
+                                base_path_br = base_path_br.replace('body_region', 'body region')
+                                base_path_br = base_path_br.replace('body_regions', 'body regions')
+                                path_dict[(base_path_br,option)] = kb_path
+                            if new_base:
+                                path_dict[(new_base,option)] = kb_path
+                                new_base = new_base.replace('body_region', 'body region')
+                                new_base = new_base.replace('body_regions', 'body regions')
+                                path_dict[(new_base,option)] = kb_path
+
+                            # kb_path = kb_path.replace('body_region', 'body region')
+                            # kb_path = kb_path.replace('body_regions', 'body regions')
+                            #unique_paths.add(path)
+
+        
+        
+        
+        return path_dict
+    
+
+    def save_kb_images_cv2(self, image_path, img_tfm, norm_tfm, resize_size=(488, 488)):
+        img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        
+        split = image_path.split("/")
+        last = split[-1]
+        file_name = last.split(".")[0]
+
+        if img is None:
+            raise FileNotFoundError(f"Image not found at: {image_path}")
+
+        img = cv2.resize(img, resize_size, interpolation=cv2.INTER_AREA)
+        img = np.stack([img] * 3, axis=-1)  # HWC, 3-channel
+
+        # Convert NumPy array (HWC, uint8) to PIL Image
+        img = Image.fromarray(img)
+        
+        img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
+        del img
+
+        # Now apply img_tfm (e.g., Resize/Crop etc.)
+        #img = img_tfm(img)
+
+        # If img_tfm includes ToTensor, then just:
+        #img = norm_tfm(img)
+        
+        # pil_img = to_pil_image(img)
+        # nd_img = np.array(img)
+        # print(f"Image shape: {nd_img.shape}")
+        # print(f"Bytes in memory: {nd_img.nbytes} bytes")
+        # print(f"Kilobytes: {nd_img.nbytes / 1024:.2f} KB")
+        # print(f"Megabytes: {nd_img.nbytes / 1024**2:.2f} MB")
+        
+        # print("PYTORCH TENSOR:")
+        # n_bytes = img.numel() * img.element_size()
+        # print(f"Image shape: {img.shape}")
+        # print(f"Bytes in memory: {n_bytes}")
+        # print(f"Kilobytes: {n_bytes / 1024:.2f} KB")
+        # print(f"Megabytes: {n_bytes / (1024*1024):.2f} MB")
+        # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.png")
+        # pil_img.save(f"/home/guests/adrian_delchev/code/kb_images/{file_name}.jpeg")
+        # # self.save_normalized_tensor_image(img, self.norm_transform, "img_1.jpeg" ) or png
+        
+        return None
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Test knowledge base")
@@ -860,11 +1147,11 @@ if __name__ == '__main__':
 
     KNOWLEDGE_BASE = KnowledgeBase(CONSTANTS.KNOWLEDGE_BASE_INDEX_FILE)
     KNOWLEDGE_BASE.train_transform = kb_transforms
-    KNOWLEDGE_BASE_CACHED = CachedKnowledgeBase(CONSTANTS.KNOWLEDGE_BASE_INDEX_FILE, kb_transforms)
+    KNOWLEDGE_BASE_CACHED = ImageMoverFromIndexFile(CONSTANTS.KNOWLEDGE_BASE_INDEX_FILE_TINY, kb_transforms, img_tfm, norm_tfm)
     
     sample_paths = [{'path': 'lung_signs',
                     'options': ['yes', 'no']}]
     
     images = KNOWLEDGE_BASE.get_images_for_paths(sample_paths)
-    images2 = KNOWLEDGE_BASE_CACHED.get_images_for_paths(sample_paths)
+    #images2 = KNOWLEDGE_BASE_CACHED.get_images_for_paths(sample_paths)
     print("done :)")

@@ -4,6 +4,7 @@ from datetime import datetime
 import gc
 import json
 import os
+import pickle
 import warnings
 import wandb
 
@@ -16,8 +17,8 @@ from torch.utils.data._utils.collate import collate, default_collate_fn_map
 from torchvision import transforms
 from pytorch_lightning.loggers import WandbLogger
 
-from data_utils.data_radrestruct import RadReStruct, RadReStructCOMBINED, RadReStructReversed, RadReStructCOMBINEDEval
-from knowledge_base.knowledge_base_loader import KnowledgeBase,CachedKnowledgeBase
+from data_utils.data_radrestruct import RadReStruct, RadReStructCOMBINED, RadReStructPrecomputed, RadReStructReversed, RadReStructCOMBINEDEval
+from knowledge_base.knowledge_base_loader import KnowledgeBase,CachedKnowledgeBase, PrecomputedKnowledgeBase
 from net.model import ModelWrapper
 
 import tracemalloc, linecache
@@ -97,6 +98,11 @@ if __name__ == '__main__':
     parser.add_argument('--acc_grad_batches', type=int, required=False, default=None, help="how many batches to accumulate gradients")
     ## KB
     parser.add_argument('--kb_dir', type=str, required=False, default=None, help="the path to the knowledge base index file")
+    ## Freezing parts of the model
+    parser.add_argument('--freeze_image_encoder', action='store_true', default=False, help="freeze the image encoder so its weights don't get updated")
+    parser.add_argument('--freeze_question_encoder', action='store_true', default=False, help="freeze the question encoder so its weights don't get updated")
+    ## Precomputed
+    parser.add_argument('--use_precomputed', action='store_true', default=False, help="use precomputed KB, image features, global embeddings and text features")
 
     args = parser.parse_args()
 
@@ -119,12 +125,9 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     model = ModelWrapper(args)
+    # move the missing knowledge embedding from the image encoder to the gpu
     model.model.image_encoder.missing_knowledge_embedding = model.model.image_encoder.missing_knowledge_embedding.to(device=device)
 
-    # use torchinfo to see model architecture and trainable parameters
-    from torchinfo import summary
-
-    summary(model)
 
     if args.use_pretrained:
         print(f"{timestamp()}Loading model from checkpoint: {args.model_dir}")
@@ -142,16 +145,26 @@ if __name__ == '__main__':
         print(f"\n {timestamp()}Attempting to load state_dict into image_encoder...")
         missing_keys, unexpected_keys = model.model.image_encoder.load_state_dict(image_encoder_state_dict)
         
-        # Freeze the image encoder
-        for param in model.model.image_encoder.parameters():
-            param.requires_grad = False
-        print(f"{timestamp()}The image encoder has been frozen")
-        
         ### Old - loading full model weights
         #checkpoint = torch.load(args.model_dir, map_location=torch.device('cpu'))
         #missing_keys, unexpected_keys = model.load_state_dict(checkpoint['state_dict'])
         assert len(missing_keys) == 0
         assert len(unexpected_keys) == 0
+        
+    if args.freeze_image_encoder:
+        for param in model.model.image_encoder.parameters():
+            param.requires_grad = False
+        print(f"{timestamp()}The image encoder has been frozen")
+    
+    if args.freeze_question_encoder:
+        for param in model.model.question_encoder.parameters():
+            param.requires_grad = False
+        print(f"{timestamp()}The question encoder has been frozen")
+        
+        
+    # use torchinfo to see model architecture and trainable parameters
+    from torchinfo import summary
+    summary(model)
 
     img_tfm = model.model.image_encoder.img_tfm
     norm_tfm = model.model.image_encoder.norm_tfm
@@ -176,7 +189,17 @@ if __name__ == '__main__':
     kb_transforms = transforms.Compose([kb_transforms,
                                         norm_tfm])
     
-    model.model.knowledge_base = CachedKnowledgeBase(args.kb_dir, kb_transforms, img_transform=img_tfm, norm_transform=norm_tfm)
+    if args.use_precomputed:
+        model.model.knowledge_base = PrecomputedKnowledgeBase(args.kb_dir, kb_transforms, img_transform=img_tfm,
+                                                             norm_transform=norm_tfm, precomputed_path='/home/guests/adrian_delchev/code/ad_Rad-ReStruct/precomputed/kb_5samples_3composite.pkl')
+        traindataset = RadReStructPrecomputed(tfm=train_tfm, mode='train', args=args, precompute=args.use_precomputed)
+        valdataset = RadReStructPrecomputed(tfm=test_tfm, mode='val', args=args, precompute=args.use_precomputed)
+        print(f"{timestamp()} Using PrecomputedKnowledgeBase: {model.model.knowledge_base.precomputed_path}")
+    else:
+        model.model.knowledge_base = CachedKnowledgeBase(args.kb_dir, kb_transforms, img_transform=img_tfm, norm_transform=norm_tfm)
+        traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
+        valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
+        print(f"{timestamp()} Using CachedKnowledgeBase")
     
     model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
     model.model.knowledge_base.test_transform = kb_transforms
@@ -186,8 +209,8 @@ if __name__ == '__main__':
     # valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     ### New (overfitting)
-    traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
-    valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
+    # traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
+    # valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
 
     #handle info dicts in collate_fn
     def collate_dict_fn(batch, *, collate_fn_map):
