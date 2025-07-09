@@ -19,7 +19,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 from data_utils.data_radrestruct import RadReStruct, RadReStructCOMBINED, RadReStructPrecomputed, RadReStructReversed, RadReStructCOMBINEDEval
 from knowledge_base.knowledge_base_loader import KnowledgeBase,CachedKnowledgeBase, PrecomputedKnowledgeBase
-from net.model import ModelWrapper
+from net_bbc.model_bbc import ModelWrapperBBC
 
 import tracemalloc, linecache
 import objgraph
@@ -60,7 +60,6 @@ class MallocTrim(pl.Callback):
             trim_cpu_cache()
 
 if __name__ == '__main__':
-    tracemalloc.start()
     parser = argparse.ArgumentParser(description="Finetune on RadReStruct")
 
     parser.add_argument('--run_name', type=str, required=False, default="debug", help="run name for wandb")
@@ -97,7 +96,6 @@ if __name__ == '__main__':
     parser.add_argument('--n_layers', type=int, required=False, default=1, help="num of fusion layers")
     parser.add_argument('--acc_grad_batches', type=int, required=False, default=None, help="how many batches to accumulate gradients")
     ## KB
-    parser.add_argument('--initialize_kb', action='store_true', default=False, help="is the KB actually being loaded into memory")
     parser.add_argument('--kb_dir', type=str, required=False, default=None, help="the path to the knowledge base index file")
     parser.add_argument('--use_kb_adapter', action='store_true', default=False, help="use the bbc kb adapter")
     parser.add_argument('--kb_adapter_dir', type=str, required=False, default=None, help="the path to the knowledge base bbc adapter model")
@@ -123,13 +121,11 @@ if __name__ == '__main__':
 
     pl.seed_everything(args.seed, workers=True)
 
-    args.num_classes = 96
+    args.num_classes = 1
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = ModelWrapper(args)
-    print(f"{timestamp()} ==================================================================")
-    print(f"{timestamp()} Using the forward() defined in: {model.model.get_forward_origin()}")
+    model = ModelWrapperBBC(args)
     # move the missing knowledge embedding from the image encoder to the gpu
     model.model.image_encoder.missing_knowledge_embedding = model.model.image_encoder.missing_knowledge_embedding.to(device=device)
 
@@ -156,42 +152,61 @@ if __name__ == '__main__':
         assert len(missing_keys) == 0
         assert len(unexpected_keys) == 0
 
-    ### Load pre-trained bbc and freeze it
-    # if args.use_kb_adapter:
-    #     print(f"{timestamp()}Loading BBC model from checkpoint: {args.kb_adapter_dir}")
+    if args.use_kb_adapter:
+        print(f"{timestamp()}Loading BBC fusion and classifier model from checkpoint: {args.kb_adapter_dir}")
 
-    #     checkpoint = torch.load(args.kb_adapter_dir, map_location=torch.device('cpu'))
-    #     full_state_dict = checkpoint['state_dict']
+        checkpoint = torch.load(args.kb_adapter_dir, map_location=torch.device('cpu'))
+        full_state_dict = checkpoint['state_dict']
 
-    #     fusion_bbc_state_dict = OrderedDict()
-    #     bbc_classifier_state_dict = OrderedDict()
-    #     for k, v in full_state_dict.items():
-    #         if k.startswith('model.fusion.'):
-    #             # Remove the 'image_encoder.' prefix
-    #             new_key = k.replace('model.fusion.', '')
-    #             fusion_bbc_state_dict[new_key] = v
+        
 
-    #         if k.startswith('model.classifier.'):
-    #             # Remove the 'image_encoder.' prefix
-    #             new_key = k.replace('model.classifier.', '')
-    #             bbc_classifier_state_dict[new_key] = v
+        fusion_bbc_state_dict = OrderedDict()
+        bbc_classifier_state_dict = OrderedDict()
 
-    #     print(f"\n {timestamp()}Attempting to load state_dict into bbc fusion...")
-    #     missing_keys, unexpected_keys = model.model.bbc.load_state_dict(fusion_bbc_state_dict)
+        for k, v in full_state_dict.items():
+            if k.startswith('model.fusion.'):
+                # Remove the 'image_encoder.' prefix
+                new_key = k.replace('model.fusion.', '')
+                fusion_bbc_state_dict[new_key] = v
 
-    #     print(f"\n {timestamp()}Attempting to load state_dict into bbc classifier...")
-    #     missing_keys, unexpected_keys = model.model.bbc_classifier.load_state_dict(bbc_classifier_state_dict)
+            if k.startswith('model.classifier.'):
+                # Remove the 'image_encoder.' prefix
+                new_key = k.replace('model.classifier.', '')
+                bbc_classifier_state_dict[new_key] = v
 
-    #     assert len(missing_keys) == 0
-    #     assert len(unexpected_keys) == 0
+        
+        # ttid_tensor = fusion_bbc_state_dict['embeddings.token_type_embeddings.weight']
+        # e0 = ttid_tensor[0:1]
+        # e1 = ttid_tensor[1:2]
+        # e2 = ttid_tensor[2:3]
+        # e3 = ttid_tensor[3:4]
 
-    #     for param in model.model.bbc.parameters():
-    #         param.requires_grad = False
-    #     print(f"{timestamp()}The BBC fusion has been frozen")
+        # ttid_tensor = raw_state_dict['model.fusion.embeddings.token_type_embeddings.weight']
+        # e0 = ttid_tensor[0:1]
+        # e1 = ttid_tensor[1:2]
+        # e2 = ttid_tensor[2:3]
+        # e3 = ttid_tensor[3:4]
+        # e4 = ttid_tensor[4:5]
+        # e5 = ttid_tensor[5:6]
+        # e6 = ttid_tensor[6:7]
+        # e7 = ttid_tensor[7:8]
+        print(f"\n {timestamp()}Attempting to load state_dict into bbc fusion...")
+        missing_keys, unexpected_keys = model.model.bbc.load_state_dict(fusion_bbc_state_dict)
 
-    #     for param in model.model.bbc_classifier.parameters():
-    #         param.requires_grad = False
-    #     print(f"{timestamp()}The BBC classifier has been frozen")
+
+        print(f"\n {timestamp()}Attempting to load state_dict into bbc classifier...")
+        missing_keys, unexpected_keys = model.model.bbc_classifier.load_state_dict(bbc_classifier_state_dict)
+
+        assert len(missing_keys) == 0
+        assert len(unexpected_keys) == 0
+
+        for param in model.model.bbc.parameters():
+            param.requires_grad = False
+        print(f"{timestamp()}The BBC fusion has been frozen")
+
+        for param in model.model.bbc_classifier.parameters():
+            param.requires_grad = False
+        print(f"{timestamp()}The BBC classifier has been frozen")
         
     if args.freeze_image_encoder:
         for param in model.model.image_encoder.parameters():
@@ -232,24 +247,19 @@ if __name__ == '__main__':
                                         norm_tfm])
     
     if args.use_precomputed:
-        if args.initialize_kb:
-            model.model.knowledge_base = PrecomputedKnowledgeBase(args.kb_dir, kb_transforms, img_transform=img_tfm,
-                                                                norm_transform=norm_tfm, precomputed_path='/home/guests/adrian_delchev/code/ad_Rad-ReStruct/precomputed/kb_5samples_3composite.pkl')
-            print(f"{timestamp()} Using PrecomputedKnowledgeBase: {model.model.knowledge_base.precomputed_path}")
+        model.model.knowledge_base = PrecomputedKnowledgeBase(args.kb_dir, kb_transforms, img_transform=img_tfm,
+                                                             norm_transform=norm_tfm, precomputed_path='/home/guests/adrian_delchev/code/ad_Rad-ReStruct/precomputed/kb_5samples_3composite.pkl')
         traindataset = RadReStructPrecomputed(tfm=train_tfm, mode='train', args=args, precompute=args.use_precomputed)
         valdataset = RadReStructPrecomputed(tfm=test_tfm, mode='val', args=args, precompute=args.use_precomputed)
-        
+        print(f"{timestamp()} Using PrecomputedKnowledgeBase: {model.model.knowledge_base.precomputed_path}")
     else:
-        if args.initialize_kb:
-            model.model.knowledge_base = CachedKnowledgeBase(args.kb_dir, model.model.image_encoder, kb_transforms, img_transform=img_tfm, norm_transform=norm_tfm)
+        model.model.knowledge_base = CachedKnowledgeBase(args.kb_dir, model.model.image_encoder, kb_transforms, img_transform=img_tfm, norm_transform=norm_tfm)
         traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
         valdataset = RadReStruct(tfm=test_tfm, mode='val', args=args)
         print(f"{timestamp()} Using CachedKnowledgeBase")
     
-    ### set KB transforms
-    if args.initialize_kb:
-        model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
-        model.model.knowledge_base.test_transform = kb_transforms
+    model.model.knowledge_base.train_transform = kb_transforms ## USING TEST SINCE NO AUGMENTATION ? 
+    model.model.knowledge_base.test_transform = kb_transforms
 
     ### Original
     # traindataset = RadReStruct(tfm=train_tfm, mode='train', args=args)
@@ -312,6 +322,22 @@ if __name__ == '__main__':
     
     
     trainer.fit(model, train_dataloaders=trainloader, val_dataloaders=valloader)
+
+
+    ## inspecting embeddings:
+    # e0 = model.model.fusion.embeddings.token_type_embeddings.weight[0:1]
+    # e1 = model.model.fusion.embeddings.token_type_embeddings.weight[1:2]
+    # e2 = model.model.fusion.embeddings.token_type_embeddings.weight[2:3]
+    # e3 = model.model.fusion.embeddings.token_type_embeddings.weight[3:4]
+    # e4 = model.model.fusion.embeddings.token_type_embeddings.weight[4:5]
+    # e5 = model.model.fusion.embeddings.token_type_embeddings.weight[5:6]
+    # e6 = model.model.fusion.embeddings.token_type_embeddings.weight[6:7]
+    # e7 = model.model.fusion.embeddings.token_type_embeddings.weight[7:8]
+    # e8 = model.model.fusion.embeddings.token_type_embeddings.weight[8:9]
+    # print("done")
+
+    # torch.save(model.state_dict(), 'manual_state_dict.pt')
+
     
     # print("After some training:")
     # objgraph.show_most_common_types(limit=20)

@@ -245,10 +245,55 @@ class AutoregressiveEvaluator:
             'l2_body_regions'] = f"F1: {f1_l2_body_regions:.4f} - Acc: {acc_report_l2_body_regions:.4f} - Prec: {prec_l2_body_regions:.4f} - Rec: {rec_l2_body_regions:.4f}"
         detailed_metrics['l3'] = f"F1: {f1_l3:.4f} - Acc: {acc_report_l3:.4f} - Prec: {prec_l3:.4f} - Rec: {rec_l3:.4f}"
 
+        ### L1 f1,acc,prec,rec
+        detailed_metrics['l1_f1'] = f1_l1
+        detailed_metrics['l1_acc'] = acc_report_l1
+        detailed_metrics['l1_prec'] = prec_l1
+        detailed_metrics['l1_rec'] = rec_l1
+        
+        # l2 overall
+        detailed_metrics['l2_f1'] = f1_l2
+        detailed_metrics['l2_acc'] = acc_report_l2
+        detailed_metrics['l2_prec'] = prec_l2
+        detailed_metrics['l2_rec'] = rec_l2
+        
+        # l2 diseases
+        detailed_metrics['l2_diseases_f1'] = f1_l2_diseases
+        detailed_metrics['l2_diseases_acc'] = acc_report_l2_diseases
+        detailed_metrics['l2_diseases_prec'] = prec_l2_diseases
+        detailed_metrics['l2_diseases_rec'] = rec_l2_diseases
+        
+        # l2 signs
+        detailed_metrics['l2_signs_f1'] = f1_l2_signs
+        detailed_metrics['l2_signs_acc'] = acc_report_l2_signs
+        detailed_metrics['l2_signs_prec'] = prec_l2_signs
+        detailed_metrics['l2_signs_rec'] = rec_l2_signs
+        
+        # l2 objects
+        detailed_metrics['l2_objects_f1'] = f1_l2_objects
+        detailed_metrics['l2_objects_acc'] = acc_report_l2_objects
+        detailed_metrics['l2_objects_prec'] = prec_l2_objects
+        detailed_metrics['l2_objects_rec'] = rec_l2_objects
+        
+        # l2 body regions
+        detailed_metrics['l2_body_regions_f1'] = f1_l2_body_regions
+        detailed_metrics['l2_body_regions_acc'] = acc_report_l2_body_regions
+        detailed_metrics['l2_body_regions_prec'] = prec_l2_body_regions
+        detailed_metrics['l2_body_regions_rec'] = rec_l2_body_regions
+        
+        # l3 
+        detailed_metrics['l3_f1'] = f1_l3
+        detailed_metrics['l3_acc'] = acc_report_l3
+        detailed_metrics['l3_prec'] = prec_l3
+        detailed_metrics['l3_rec'] = rec_l3
+        
+        
+
         return detailed_metrics
 
     def compute_metrics(self, preds, targets):
         preds = self.clean_preds(preds)
+        #targets = targets[0:0+1]
         class_report = classification_report(targets, preds, output_dict=True, zero_division=1)
         detailed_metrics = self.calculate_detailed_metrics(preds, targets)
 
@@ -258,8 +303,48 @@ class AutoregressiveEvaluator:
         recall = np.mean([class_report[class_name]['recall'] for class_name in class_report if class_report[class_name]['support'] > 0])
         acc = accuracy_score(targets.flatten(), preds.flatten())
         acc_report = accuracy_score(targets, preds)
-
         return acc, acc_report, f1, precision, recall, detailed_metrics
+        
+        
+                
+
+
+    # ##### DEBUG ONLY - change after
+    # def compute_metrics(self, preds, targets):
+    #     preds = self.clean_preds(preds)
+    #     targets = targets[0:0+1] ## just one report
+    #     class_report = classification_report(targets, preds, output_dict=True, zero_division=1)
+    #     detailed_metrics = self.calculate_detailed_metrics(preds, targets)
+
+    #     # avg f1_score of all classes where support > 0
+    #     # f1 = np.mean([class_report[class_name]['f1-score'] for class_name in class_report if class_report[class_name]['support'] > 0])
+    #     # precision = np.mean([class_report[class_name]['precision'] for class_name in class_report if class_report[class_name]['support'] > 0])
+    #     # recall = np.mean([class_report[class_name]['recall'] for class_name in class_report if class_report[class_name]['support'] > 0])
+        
+    #     acc = accuracy_score(targets.flatten(), preds.flatten())
+    #     acc_report = accuracy_score(targets, preds)
+        
+    #     ##### Detailed for debugging purposes
+    #     f1_scores = []
+    #     for class_name in class_report:
+    #         if class_report[class_name]['support'] > 0:
+    #             f1_scores.append(class_report[class_name]['f1-score'])
+        
+    #     precision_scores = []
+    #     for class_name in class_report:
+    #         if class_report[class_name]['support'] > 0:
+    #             precision_scores.append(class_report[class_name]['precision'])
+                
+    #     recall = []
+    #     for class_name in class_report:
+    #         if class_report[class_name]['support'] > 0:
+    #             precision_scores.append(class_report[class_name]['recall'])
+        
+        
+                
+
+
+    #     return acc, acc_report, f1, precision, recall, detailed_metrics
 
     def evaluate(self, preds, targets):
         acc, acc_report, f1, precision, recall, detailed_metrics = self.compute_metrics(preds, targets)

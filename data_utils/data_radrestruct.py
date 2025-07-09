@@ -315,7 +315,7 @@ class RadReStruct(Dataset):
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
 
-        #self.samples = self.samples[:10] # For debugging of validation, comment out after
+        #self.samples = self.samples[:5] # For debugging of validation, comment out after
 
     def __len__(self):
         return len(self.samples)
@@ -473,7 +473,7 @@ class RadReStructPrecomputed(Dataset):
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
 
-        #self.samples = self.samples[:1] # For debugging of validation, comment out after
+        #self.samples = self.samples[2:3] # For debugging of validation, comment out after
 
     def __len__(self):
         return len(self.samples)
@@ -500,7 +500,7 @@ class RadReStructPrecomputed(Dataset):
         answer = qa_sample[1]
         history = qa_sample[2]
         info = qa_sample[3]
-        #info['positive_option'] = answer
+        info['positive_option'] = answer
 
         ### info contains:
         ### answer_type: str = 'single_choice'/'multiple_choice'

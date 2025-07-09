@@ -172,6 +172,8 @@ class ImageEncoderEfficientNet(nn.Module):
           -1.0591e-03,  1.5921e-02, -2.7625e-02, -3.5394e-02,  2.6525e-02,
           -1.0573e-02, -2.0254e-03, -2.5659e-02]]])
         self.missing_knowledge_embedding = F.normalize(self.missing_knowledge_embedding, dim=-1)
+        self.zero_embedding = torch.zeros_like(self.missing_knowledge_embedding)
+        self.one_embedding = torch.ones_like(self.missing_knowledge_embedding)
         #self.missing_knowledge_embedding = self.missing_knowledge_embedding.to(device=self.model.device)
         if 'radrestruct' in args.data_dir:
             self.transforms.transforms[0] = transforms.Resize((488, 488))
@@ -268,8 +270,11 @@ class ImageEncoderEfficientNet(nn.Module):
         # global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
         
         # Global embedding (max over spatial dimensions) - Global everage pooling
-        # global_embedding = x.amax(dim=[2, 3])  # (B, hidden_size)
-        # global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
+        if self.args.use_pretrained:
+            pass
+        else:
+            global_embedding = x.amax(dim=[2, 3])  # (B, hidden_size)
+            global_embedding = global_embedding.unsqueeze(1) # (B, 1, hidden_size)
 
         # Token embedding (flatten spatial dimensions into sequence)
         image_tokens = x.flatten(2).permute(0, 2, 1)  # (B, h'*w', hidden_size)
@@ -280,7 +285,7 @@ class ImageEncoderEfficientNet(nn.Module):
         # if not torch.isfinite(global_embedding).all():
         #     print(f'{timestamp()}Image encoder produced nan/inf in global_embedding')
 
-        return image_tokens #, global_embedding
+        return image_tokens if self.args.use_pretrained else image_tokens ,global_embedding
     
     @torch.no_grad()
     def get_global_embeddings(self, img):

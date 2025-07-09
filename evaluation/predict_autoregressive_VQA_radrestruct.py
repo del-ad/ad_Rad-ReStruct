@@ -76,10 +76,11 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
     infos = elem["infos"] if topic_name != "infos" else elem
     elem_history = deepcopy(history)
 
-    if args.use_pretrained:
+    if args.use_precomputed:
         img, global_embedding = img
+        img_data = (img, global_embedding)
     else:
-        img = img
+        img_data = img
 
     gt_instances = elem["instances"]
     instance_keys = list(infos.keys())
@@ -158,13 +159,13 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                 # make prediction
                 tokens, q_attn_mask, attn_mask, token_type_ids = encode_text_progressive(question, elem_history, tokenizer, mode='val', args=args)
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                if args.use_pretrained:
-                    out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                if args.use_precomputed:
+                    out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                 q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                 attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                                 batch_metadata=batch_metadata, mode='val')
                 else:
-                    out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                    out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                     q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                     attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                     batch_metadata=batch_metadata, mode='val')
@@ -174,7 +175,13 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                 del positive_options
                 del report_keys_paths
 
-                q_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
+                if args.use_kb_adapter:
+                    #q_positive_pred = torch.argmax((out+score_boosts.to(device=out.device))[0, [58, 95]]) == 1  # yes was predicted
+                    q_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
+                else:
+                    q_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
+                
+                #q_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
 
             if not q_positive_pred:  # no was predicted for further instance
                 if match_instances:
@@ -259,18 +266,24 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         #positive_options = [path_answers[path][i] for i, flag in zip(path_answers[path], values_at_indecies) if flag == 1]
                         
-                        if args.use_pretrained:
-                            out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                        if args.use_precomputed:
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                         q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                         attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                                         batch_metadata=batch_metadata, mode='val')
                         else:
-                            out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                             q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                             attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                             batch_metadata=batch_metadata, mode='val')
 
-                        language_answers, pred = get_value(out, infos[key], answer_options)
+                        if args.use_kb_adapter:
+                            #language_answers, pred = get_value((out+score_boosts.to(device=out.device)), infos[key], answer_options)
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+                        else:
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+
+                        #language_answers, pred = get_value(out, infos[key], answer_options)
                         if match_instances:
                             curr_pred.extend(pred)
                             dummy_pred_vector.extend(pred)
@@ -306,18 +319,25 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         
                         
-                        if args.use_pretrained:
-                            out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                        if args.use_precomputed:
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                         q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                         attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                                         batch_metadata=batch_metadata, mode='val')
                         else:
-                            out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                             q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                             attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                             batch_metadata=batch_metadata, mode='val')
 
-                        language_answers, pred = get_value(out, infos[key], answer_options)
+                        #language_answers, pred = get_value(out, infos[key], answer_options)
+
+                        if args.use_kb_adapter:
+                            #language_answers, pred = get_value((out+score_boosts.to(device=out.device)), infos[key], answer_options)
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+                        else:
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+
                         if match_instances:
                             curr_pred.extend(pred)
                             dummy_pred_vector.extend(pred)
@@ -356,18 +376,25 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         
                         
-                        if args.use_pretrained:
-                            out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                        if args.use_precomputed:
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                         q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                         attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                                         batch_metadata=batch_metadata, mode='val')
                         else:
-                            out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                             q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                             attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                             batch_metadata=batch_metadata, mode='val')
 
-                        language_answers, pred = get_value(out, infos[key], answer_options)
+                        #language_answers, pred = get_value(out, infos[key], answer_options)
+
+                        if args.use_kb_adapter:
+                            #language_answers, pred = get_value((out+score_boosts.to(device=out.device)), infos[key], answer_options)
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+                        else:
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+
                         if match_instances:
                             curr_pred.extend(pred)
                             dummy_pred_vector.extend(pred)
@@ -408,18 +435,25 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         
                         
-                        if args.use_pretrained:
-                            out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                        if args.use_precomputed:
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                         q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                         attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                                         batch_metadata=batch_metadata, mode='val')
                         else:
-                            out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                             q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                             attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                             batch_metadata=batch_metadata, mode='val')
 
-                        language_answers, pred = get_value(out, infos[key], answer_options)
+                        #language_answers, pred = get_value(out, infos[key], answer_options)
+
+                        if args.use_kb_adapter:
+                            #language_answers, pred = get_value((out+score_boosts.to(device=out.device)), infos[key], answer_options)
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+                        else:
+                            language_answers, pred = get_value(out, infos[key], answer_options)
+
                         if match_instances:
                             curr_pred.extend(pred)
                             dummy_pred_vector.extend(pred)
@@ -541,12 +575,14 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
     # with torch.cuda.amp.autocast():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    if args.use_pretrained:
+    if args.use_precomputed:
         img, global_embedding = img
         img = img.to(device)
         global_embedding = global_embedding.to(device)
+        img_data = (img, global_embedding)
     else:
         img = img.to(device)
+        img_data = img
     for topic_name, topic in area.items():
         if topic_name == 'area':
             continue
@@ -579,18 +615,22 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                             'options': path_answers[base_path_kb],
                             'positive_option': positive_options}]
         
-        if args.use_pretrained:
-            out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+        if args.use_precomputed:
+            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                         q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                         attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                         batch_metadata=batch_metadata, mode='val')
         else:
-            out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
-            q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
-            attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
-            batch_metadata=batch_metadata, mode='val')
+            out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                        q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
+                        attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
+                        batch_metadata=batch_metadata, mode='val')
 
-        area_positive_pred = torch.argmax(out[0, [58, 95]]) == 1  # yes was predicted
+        if args.use_kb_adapter:
+            #area_positive_pred = torch.argmax((out+score_boosts.to(device=out.device))[0, [58, 95]]) == 1  # yes was predicted
+            area_positive_pred = torch.argmax(out[0, [58, 95]]) == 1  # yes was predicted
+        else:
+            area_positive_pred = torch.argmax(out[0, [58, 95]]) == 1  # yes was predicted
 
         if not area_positive_pred:  # we predicted no -> don't answer any following questions
             pred_vector.extend(NO)
@@ -651,18 +691,23 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                     
                     
                     
-                    if args.use_pretrained:
-                        out, _ = model((img,global_embedding), input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                    if args.use_precomputed:
+                        out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                                     q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                                     attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                                     batch_metadata=batch_metadata, mode='val')
                     else:
-                        out, _ = model(img, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
+                        out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
                         q_attn_mask=torch.tensor(q_attn_mask, dtype=torch.long, device=device).unsqueeze(0),
                         attn_mask=torch.tensor(attn_mask, dtype=torch.long, device=device).unsqueeze(0), token_type_ids_q=token_type_ids.unsqueeze(0),
                         batch_metadata=batch_metadata, mode='val')
 
-                    elem_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
+                    
+                    if args.use_kb_adapter:
+                        #elem_positive_pred = torch.argmax((out+score_boosts.to(device=out.device))[0, [58, 95]]) == 1  # yes was predicted
+                        elem_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
+                    else:
+                        elem_positive_pred = torch.argmax(out[0, [58, 95]]) == 1
                     
                     del batch_metadata
                     del positive_options
@@ -683,13 +728,13 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
 
 
                     else:  # positive prediction
-                        pred_vector = iterate_instances_VQA(model, (img,global_embedding), elem, question, elem_name, topic_name, area_name, history, tokenizer, args,
+                        pred_vector = iterate_instances_VQA(model, img_data, elem, question, elem_name, topic_name, area_name, history, tokenizer, args,
                                                             pred_vector, report_keys, max_instances, answer_options, report_vector_gt,
                                                             match_instances)
 
             else:
                 question = get_question(area_name, topic_name, area_name, first_instance=True)
-                pred_vector = iterate_instances_VQA(model, (img,global_embedding), topic, question, area_name, topic_name, area_name, history, tokenizer, args,
+                pred_vector = iterate_instances_VQA(model, img_data, topic, question, area_name, topic_name, area_name, history, tokenizer, args,
                                                     pred_vector, report_keys, max_instances, answer_options, report_vector_gt, match_instances)
 
     return pred_vector
@@ -709,10 +754,12 @@ def predict_autoregressive_VQA(model, valloader, args):
     preds = []
 
     for i, batch in tqdm(enumerate(valloader)):
-        if args.use_pretrained:
+        if args.use_precomputed:
             (img, global_embedding), report, report_vector_gt = batch
+            image_data = (img, global_embedding)
         else:
             img, report, report_vector_gt = batch
+            image_data = img
         assert len(report) == 1
         report = list(report[0].values())[0]
         pred_vector = []
@@ -724,14 +771,82 @@ def predict_autoregressive_VQA(model, valloader, args):
         for area in report:
             if "sub_areas" in area:
                 for sub_area_name, sub_area in area["sub_areas"].items():
-                    pred_vector = iterate_area_VQA((img, global_embedding), sub_area, sub_area_name, model, tokenizer, args, max_instances, pred_vector, report_keys,
+                    pred_vector = iterate_area_VQA(image_data, sub_area, sub_area_name, model, tokenizer, args, max_instances, pred_vector, report_keys,
                                                    answer_options, report_vector_gt, match_instances)
 
             else:
-                pred_vector = iterate_area_VQA((img, global_embedding), area, area['area'], model, tokenizer, args, max_instances, pred_vector, report_keys,
+                pred_vector = iterate_area_VQA(image_data, area, area['area'], model, tokenizer, args, max_instances, pred_vector, report_keys,
                                                answer_options, report_vector_gt, match_instances)
 
         assert len(pred_vector) == len(report_keys)
         preds.append(pred_vector)
+
+    return np.array(preds, dtype=np.float32)
+
+def predict_BBC(model, valloader, args):
+    model.eval()
+    match_instances = args.match_instances
+    tokenizer = AutoTokenizer.from_pretrained(args.bert_model, trust_remote_code=True)
+
+    with open('data/radrestruct/max_instances.json', 'r') as f:
+        max_instances = json.loads(f.read())
+    with open(f'data/radrestruct/train_vectorized_answers/1.json', 'r') as f:
+        report_keys = list(json.load(f).keys())  # same for all reports
+    answer_options = valloader.dataset.answer_options
+
+    preds = []
+
+    for i, batch in tqdm(enumerate(valloader)):
+
+        if args.use_precomputed:
+            if "vqarad" in args.data_dir:
+                (img, global_embedding), question_token, q_attention_mask, attn_mask, target, answer_type, token_type_ids_q = batch
+            else:
+                (img, global_embedding), question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch
+        else:
+            if "vqarad" in args.data_dir:
+                img, question_token, q_attention_mask, attn_mask, target, answer_type, token_type_ids_q = batch
+            else:
+                img, question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch 
+
+        question_token = question_token.squeeze(1)
+        attn_mask = attn_mask.squeeze(1)
+        q_attention_mask = q_attention_mask.squeeze(1)
+        batch_info = batch[6]
+
+        if args.use_precomputed:
+            out, gt_vectors, attentions = model((img, global_embedding), question_token, q_attention_mask, attn_mask, token_type_ids_q, batch_info, mode='val')
+        else:
+            out, gt_vectors, attentions = model(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, batch_info, mode='val')
+
+        logits = out
+        gt_vectors = gt_vectors.to(device=logits.device).detach()
+        target = gt_vectors
+
+        if "vqarad" in args.data_dir:
+            pred = logits.softmax(1).argmax(1).detach()
+            model.val_soft_scores.append(logits.softmax(1).detach())
+        else:  # multi-label classification
+            pred = (logits.sigmoid().detach() > 0.5).detach().long()
+            model.val_soft_scores.append(logits.sigmoid().detach())
+
+        model.val_preds.append(pred)
+        model.val_targets.append(target)
+        if "vqarad" in model.args.data_dir:
+            model.val_answer_types.append(answer_type)
+        else:
+            model.val_infos.append(info)
+
+        if "vqarad" in model.args.data_dir:
+            val_loss = model.loss_fn(logits[target != -1], target[target != -1])
+        else:
+            val_loss = model.loss_fn(logits, target)
+            # only use loss of occuring classes --- not relevant for bbc
+            # if "radrestruct" in self.args.data_dir:
+            #     val_loss = self.get_masked_loss(val_loss, mask, target, None)
+        mean_val_loss = val_loss.mean()
+        model.log('Loss/val', mean_val_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        return mean_val_loss
 
     return np.array(preds, dtype=np.float32)

@@ -225,15 +225,17 @@ class KnowledgeBase:
         print(f"⏱️ Validation completed in {elapsed_time:.2f} seconds")
 
 class CachedKnowledgeBase:
-    def __init__(self, knowledge_base, full_transform, img_transform, norm_transform):
+    def __init__(self, knowledge_base, image_encoder, full_transform, img_transform, norm_transform):
         self.image_cache = {}
         self.transform = full_transform
         self.img_transform = img_transform
         self.norm_transform = norm_transform
         self.kb = load_json_file(Path(knowledge_base))
         self.labels_encodings = {}
+        self.image_encoder = image_encoder
         self.CONSTANTS = Constants(Mode.CLUSTER)
-        self.NUM_EXAMPLES = 5
+        self.NUM_EXAMPLES = 5 # how many images are loaded from the kb
+        self.NUM_SAMPLED_EXAMPLES = 3 # how many images are returned for each path/option
         
         self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes', 'lung_body_regions_degree',
                                  'lung_body regions_localization', 'lung_body regions_attributes', 'lung_body regions_degree',  
@@ -246,8 +248,41 @@ class CachedKnowledgeBase:
         
         self.path_lookup = self.__generate_path_lookup()
         
-        
-        ## Load in full size, then resize
+        ###### WORKING VERSION
+        # ## Load in full size, then resize
+        # print("Preloading knowledge base...")
+        # for idx, (kb_key, image_paths) in enumerate(self.kb.items()):
+        #     self.image_cache[kb_key] = []
+
+        #     # lung_signs_yes
+        #     if self.is_l1_positive_key(kb_key):
+        #         # lung_signs_airspace disease_yes, lung_signs_consolication_yes, lung_signs_deformity_yes ...
+        #         l2_positive_paths = self.CONSTANTS.load_l1_to_l2_mapping_dict()[kb_key]
+
+
+        #         for i in range(self.NUM_EXAMPLES):
+        #             composite_image = []
+        #             # a list holding images for each positive l2 path for a given positive l1 path
+        #             for l2_positive_path in l2_positive_paths:
+        #                 if len(self.kb[l2_positive_path]) > 0:
+        #                     # a single image path, randomly sampled
+        #                     l2_positive_sample_for_path = random.choice(self.kb[l2_positive_path])
+        #                     if l2_positive_sample_for_path:
+        #                         img = self.load_kb_image_PIL(l2_positive_sample_for_path, self.img_transform,
+        #                                                      self.norm_transform)
+        #                         composite_image.append(img)
+
+        #         ## need to create a batch of images, to be fed to the image encoder later to obtain image features
+        #         ##  composite_image
+        #             self.image_cache[kb_key].append(composite_image)
+        #     else:
+        #         for kb_img_path in image_paths[:self.NUM_EXAMPLES]:
+        #             img = self.load_kb_image_PIL(kb_img_path, self.img_transform, self.norm_transform)
+        #             self.image_cache[kb_key].append(img)
+        #     # self.image_cache[kb_key] = [self.load_kb_image_cv2(img_path, self.img_transform, self.norm_transform) for img_path in image_paths[:5]]
+        #     print(f"Preload complete for {kb_key} | {idx}/{len(self.kb)}")
+
+                ## Load in full size, then resize
         print("Preloading knowledge base...")
         for idx, (kb_key, image_paths) in enumerate(self.kb.items()):
             self.image_cache[kb_key] = []
@@ -269,12 +304,13 @@ class CachedKnowledgeBase:
                                 img = self.load_kb_image_PIL(l2_positive_sample_for_path, self.img_transform,
                                                              self.norm_transform)
                                 composite_image.append(img)
+                        # ## in case of missing knowledge
+                        # else:
+                        #     composite_image.append(self.image_encoder.missing_knowledge_embedding)
 
                 ## need to create a batch of images, to be fed to the image encoder later to obtain image features
                 ##  composite_image
-                    self.image_cache[kb_key].append(composite_image)
-
-
+                    self.image_cache[kb_key].append(torch.stack(composite_image))
             else:
                 for kb_img_path in image_paths[:self.NUM_EXAMPLES]:
                     img = self.load_kb_image_PIL(kb_img_path, self.img_transform, self.norm_transform)
@@ -294,8 +330,34 @@ class CachedKnowledgeBase:
     
     
     ### given a path - return the knowledge base examples for 
-    ## that path - 
-    def get_images_for_paths(self, batch_metadata, sampled = True, num_samples = 3):
+    #### WORKING VERSION
+    # def get_images_for_paths(self, batch_metadata, sampled = True, num_samples = 3):
+    #     batch_examples = []
+    #     for meta in batch_metadata:
+    #         path = meta["path"]
+    #         options = meta["options"]
+    #         examples = {}
+    #         for option in options:
+    #             lookup_tuple = (path, option)
+    #             full_kb_image_samples = self.image_cache.get(self.path_lookup[lookup_tuple], [])
+                 
+    #             path_no_underscore = path.replace("body_region", "body region")
+    #             path_no_underscore = path_no_underscore.replace("body_regions", "body regions")
+                
+    #             if (len(path_no_underscore.split("_")) == 2 and option=='yes') and (path not in self.special_paths_l1):
+    #                 samples_count = min(num_samples, len(full_kb_image_samples))
+    #                 samples = random.sample(full_kb_image_samples, samples_count)
+    #                 ## samples[0] is a list of tensors
+    #                 examples[option] = [tensor for tensor in samples[0]]
+    #             else:
+    #                 samples_count = min(num_samples, len(full_kb_image_samples))
+    #                 examples[option] = random.sample(full_kb_image_samples, samples_count)
+
+    #         batch_examples.append(examples)
+    #     return batch_examples
+    
+    # version copied from Precomputed KB
+    def get_images_for_paths(self, batch_metadata, sampled=True, num_samples=3):
         batch_examples = []
         for meta in batch_metadata:
             path = meta["path"]
@@ -304,24 +366,22 @@ class CachedKnowledgeBase:
             for option in options:
                 lookup_tuple = (path, option)
                 full_kb_image_samples = self.image_cache.get(self.path_lookup[lookup_tuple], [])
-                
-                
+
                 path_no_underscore = path.replace("body_region", "body region")
                 path_no_underscore = path_no_underscore.replace("body_regions", "body regions")
-                
-                
-                
-                
-                
-                
-                if (len(path_no_underscore.split("_")) == 2 and option=='yes') and (path not in self.special_paths_l1):
-                    samples_count = min(num_samples, len(full_kb_image_samples))
-                    samples = random.sample(full_kb_image_samples, samples_count)
-                    ## samples[0] is a list of tensors
-                    examples[option] = [tensor for tensor in samples[0]]
+
+                samples_count = min(self.NUM_SAMPLED_EXAMPLES, len(full_kb_image_samples))
+                ## if there are KB examples
+                if len(full_kb_image_samples) > 0:
+                    ## if it's a l2, l3 path
+                    if full_kb_image_samples[0].dim() == 3 and full_kb_image_samples[0].size(0) == 3:
+                        samples = random.sample(full_kb_image_samples, samples_count)
+                    ## for a L1 question - take just 1 sample
+                    elif full_kb_image_samples[0].dim() == 4:
+                        samples = random.sample(full_kb_image_samples, 1)
                 else:
-                    samples_count = min(num_samples, len(full_kb_image_samples))
-                    examples[option] = random.sample(full_kb_image_samples, samples_count)
+                    samples = []
+                examples[option] = samples
 
             batch_examples.append(examples)
         return batch_examples
@@ -385,10 +445,6 @@ class CachedKnowledgeBase:
                             # kb_path = kb_path.replace('body_region', 'body region')
                             # kb_path = kb_path.replace('body_regions', 'body regions')
                             #unique_paths.add(path)
-
-        
-        
-        
         return path_dict
     
 
@@ -526,8 +582,8 @@ class PrecomputedKnowledgeBase:
         self.kb = load_json_file(Path(knowledge_base))
         self.labels_encodings = {}
         self.CONSTANTS = Constants(Mode.LOCAL)
-        self.NUM_EXAMPLES = 5
-        self.NUM_EXAMPLES_FOR_COMPOSITE_IMAGE = 3
+        self.NUM_EXAMPLES = 5 # how many images are loaded for each sample from the kb
+        self.NUM_EXAMPLES_FOR_COMPOSITE_IMAGE = 3 # how many images are returned as examples for each path
         self.precomputed_path = precomputed_path
 
         self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes',
