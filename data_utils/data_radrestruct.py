@@ -315,7 +315,7 @@ class RadReStruct(Dataset):
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
 
-        #self.samples = self.samples[:5] # For debugging of validation, comment out after
+        #self.samples = self.samples[:1] # For debugging of validation, comment out after
 
     def __len__(self):
         return len(self.samples)
@@ -339,6 +339,7 @@ class RadReStruct(Dataset):
         history = qa_sample[2]
         info = qa_sample[3]
         info['positive_option'] = qa_sample[1] ## positive options/answer
+        info['img_name'] = img_name
 
         ### info contains:
         ### answer_type: str = 'single_choice'/'multiple_choice'
@@ -415,7 +416,7 @@ class RadReStructEval(Dataset):
         if self.tfm:
             img = self.tfm(img)
 
-        return img, report, torch.tensor(report_vector_gt, dtype=torch.long)
+        return img, img_name, report, torch.tensor(report_vector_gt, dtype=torch.long)
 class RadReStructPrecomputed(Dataset):
     """
     dataset for question-level training and inference: each element consists of the image and one corresponding question with history
@@ -472,8 +473,12 @@ class RadReStructPrecomputed(Dataset):
         self.mode = mode
         with open('data/radrestruct/answer_options.json', 'r') as f:
             self.answer_options = json.load(f)
-
-        #self.samples = self.samples[2:3] # For debugging of validation, comment out after
+        
+        # if mode == 'train':
+        #     self.samples = self.samples[2:3] # For debugging of validation, comment out after
+        # else:
+        #     self.samples = self.samples[0:1]
+        #     pass
 
     def __len__(self):
         return len(self.samples)
@@ -501,6 +506,7 @@ class RadReStructPrecomputed(Dataset):
         history = qa_sample[2]
         info = qa_sample[3]
         info['positive_option'] = answer
+        info['img_name'] = img_name
 
         ### info contains:
         ### answer_type: str = 'single_choice'/'multiple_choice'
@@ -591,8 +597,10 @@ class RadReStructPrecomputedEval(Dataset):
                 img = self.tfm(img)
         
 
-
-        return (img, global_embed), report, torch.tensor(report_vector_gt, dtype=torch.long)
+        if self.precompute:
+            return (img, global_embed), img_name, report, torch.tensor(report_vector_gt, dtype=torch.long)
+        else:
+            return img, img_name, report, torch.tensor(report_vector_gt, dtype=torch.long)
 class RadReStructReversed(Dataset):
     """
     dataset for question-level training and inference: each element consists of the image and one corresponding question with history

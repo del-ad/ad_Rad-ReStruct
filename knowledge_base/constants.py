@@ -80,8 +80,15 @@ class Constants:
                 "/home/guests/adrian_delchev/code/ad_Rad-ReStruct/knowledge_base/KNOWLEDGE_BASE_index.json")
             self.KNOWLEDGE_BASE_INDEX_FILE_TINY = Path(
                 "/home/guests/adrian_delchev/code/ad_Rad-ReStruct/knowledge_base/KNOWLEDGE_BASE_index_20.json")
+            # RRS as kb
+            self.RRS_AS_KB_TRAIN = Path(
+                "/home/guests/adrian_delchev/code/ad_Rad-ReStruct/knowledge_base/rrs_train_askb.json")
+            self.RRS_AS_KB_VAL = Path(
+                "/home/guests/adrian_delchev/code/ad_Rad-ReStruct/knowledge_base/rrs_val_askb.json")
 
         ### General shared data
+        self.L1_TO_L2_MAPPING_DICT = self.load_l1_to_l2_mapping_dict()
+        
         self.ANSWER_OPTIONS_OPTION_STR_TO_CODE_INT = {
             "abdomen": 0,
             "abnormal": 1,

@@ -234,17 +234,23 @@ class CachedKnowledgeBase:
         self.labels_encodings = {}
         self.image_encoder = image_encoder
         self.CONSTANTS = Constants(Mode.CLUSTER)
+        self.rrs_as_kb_train = load_json_file(self.CONSTANTS.RRS_AS_KB_TRAIN)
+        self.rrs_as_kb_val = load_json_file(self.CONSTANTS.RRS_AS_KB_VAL)
         self.NUM_EXAMPLES = 5 # how many images are loaded from the kb
         self.NUM_SAMPLED_EXAMPLES = 3 # how many images are returned for each path/option
         
-        self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes', 'lung_body_regions_degree',
-                                 'lung_body regions_localization', 'lung_body regions_attributes', 'lung_body regions_degree',  
-                         'trachea_body_regions_attributes', 'trachea_body_regions_degree',
-                         'trachea_body regions_attributes', 'trachea_body regions_degree',
-                         'pleura_body_regions_localization', 'pleura_body_regions_attributes','pleura_body_regions_degree',
-                         'pleura_body regions_localization', 'pleura_body regions_attributes','pleura_body regions_degree'}
+        self.special_paths_l3 = {'lung_body_regions_localization', 'lung_body_regions_attributes', 
+                                'lung_body_regions_degree', 'lung_body regions_localization', 
+                                'lung_body regions_attributes', 'lung_body regions_degree',  
+                                'trachea_body_regions_attributes', 'trachea_body_regions_degree',
+                                'trachea_body regions_attributes', 'trachea_body regions_degree',
+                                'pleura_body_regions_localization', 'pleura_body_regions_attributes',
+                                'pleura_body_regions_degree', 'pleura_body regions_localization', 
+                                'pleura_body regions_attributes','pleura_body regions_degree'}
         
-        self.special_paths_l1 = {'lung_body_regions','lung_body regions','trachea_body_regions','trachea_body regions','pleura_body_regions','pleura_body regions'}
+        self.special_paths_l1 = {'lung_body_regions','lung_body regions',
+                                 'trachea_body_regions','trachea_body regions',
+                                 'pleura_body_regions','pleura_body regions'}
         
         self.path_lookup = self.__generate_path_lookup()
         
@@ -581,7 +587,9 @@ class PrecomputedKnowledgeBase:
         self.norm_transform = norm_transform
         self.kb = load_json_file(Path(knowledge_base))
         self.labels_encodings = {}
-        self.CONSTANTS = Constants(Mode.LOCAL)
+        self.CONSTANTS = Constants(Mode.CLUSTER)
+        self.rrs_as_kb_train = load_json_file(self.CONSTANTS.RRS_AS_KB_TRAIN)
+        self.rrs_as_kb_val = load_json_file(self.CONSTANTS.RRS_AS_KB_VAL)
         self.NUM_EXAMPLES = 5 # how many images are loaded for each sample from the kb
         self.NUM_EXAMPLES_FOR_COMPOSITE_IMAGE = 3 # how many images are returned as examples for each path
         self.precomputed_path = precomputed_path
@@ -597,8 +605,9 @@ class PrecomputedKnowledgeBase:
                                  'pleura_body regions_localization', 'pleura_body regions_attributes',
                                  'pleura_body regions_degree'}
 
-        self.special_paths_l1 = {'lung_body_regions', 'lung_body regions', 'trachea_body_regions',
-                                 'trachea_body regions', 'pleura_body_regions', 'pleura_body regions'}
+        self.special_paths_l1 = {'lung_body_regions', 'lung_body regions', 
+                                 'trachea_body_regions', 'trachea_body regions', 
+                                 'pleura_body_regions', 'pleura_body regions'}
 
         self.path_lookup = self.__generate_path_lookup()
 

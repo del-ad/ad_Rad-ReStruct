@@ -33,7 +33,12 @@ from knowledge_base.constants import Constants, Mode
 #from comparison_runs_code.bbc_composite_embedding_sanity_with0 import forward, training_step, validation_step
 #from comparison_runs_code.bbc_composite_embedding_sanity_with1 import forward, training_step, validation_step
 #from comparison_runs_code.bbc_composite_embedding_selectivelabelleak import forward, training_step, validation_step
-from comparison_runs_code.rrs_vanilla_precomputed_frozen import forward, training_step, validation_step
+#from comparison_runs_code.rrs_vanilla_precomputed_frozen import forward, training_step, validation_step
+#from comparison_runs_code.bbc_noncomposite_embedding_selectivelabelleak import forward, training_step, validation_step
+#from comparison_runs_code.bbc_simple_noncomposite_selectivelabelleak import forward, training_step, validation_step
+#from comparison_runs_code.bbc_simple_noncomposite_selectivelabelleak_pretrained import forward, training_step, validation_step ### Go back to thus
+#from comparison_runs_code.bbc_simple_noncomposite_fulllabelleak_pretrained import forward, training_step, validation_step
+from comparison_runs_code.full_bbc_simpleffc_noncomposite_selectivelabelleak import forward, training_step, validation_step ### run this
 #
 from transformers import AutoTokenizer
 from memory_profiler import profile
@@ -200,17 +205,36 @@ class Model(nn.Module):
         
 
         if args.use_kb_adapter:
-            self.bbc = MyBertModel(config=self.fusion_config, args=args)
-            self.bbc_classifier = nn.Sequential(
-                ## comment out when training / doing non overfit stuff
-                ### Original - comment out next line during overfitting
-                nn.Dropout(args.classifier_dropout),
-                nn.Linear(args.hidden_size, 256),
-                nn.ReLU(),
-                # nn.BatchNorm1d(256),
-                nn.Linear(256, 1))
+            ### fusion bbc
+            # self.bbc = MyBertModel(config=self.fusion_config, args=args)
+            # self.bbc_classifier = nn.Sequential(
+            #     ## comment out when training / doing non overfit stuff
+            #     ### Original - comment out next line during overfitting
+            #     nn.Dropout(args.classifier_dropout),
+            #     nn.Linear(args.hidden_size, 256),
+            #     nn.ReLU(),
+            #     # nn.BatchNorm1d(256),
+            #     nn.Linear(256, 1))
+            self.bbc_simple_ffn = nn.Sequential(
+            nn.Linear(args.hidden_size * 2, 768),
+            nn.ReLU(),
+            nn.Dropout(args.classifier_dropout),
+            nn.Linear(768, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Dropout(args.classifier_dropout),
+            nn.Linear(64, 1),
+            )
+            self.bbc_simple_ffn.eval()
 
         self.fusion = MyBertModel(config=self.fusion_config, args=args)
+        self.train_positive = 0
+        self.train_negative = 0
+        self.train_total = 0
+        self.val_positive = 0
+        self.val_negative = 0
+        self.val_total = 0
 
         if "vqarad" in args.data_dir:
             self.classifier = nn.Linear(args.hidden_size, args.num_classes)

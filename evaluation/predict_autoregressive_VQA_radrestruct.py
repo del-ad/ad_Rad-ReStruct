@@ -71,7 +71,7 @@ def get_value(out, info, answer_options):
     return language_answers, pred
 
 
-def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, area_name, history, tokenizer, args, pred_vector, report_keys,
+def iterate_instances_VQA(model, img, img_name, elem, question, elem_name, topic_name, area_name, history, tokenizer, args, pred_vector, report_keys,
                           max_instances, answer_options, report_vector_gt=None, match_instances=False):
     infos = elem["infos"] if topic_name != "infos" else elem
     elem_history = deepcopy(history)
@@ -107,10 +107,12 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
     
     report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{answer_option}" for answer_option in path_answers[path]]
     positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
-    
+    choices = 'single_choice' if len(path.split("_")) == 2 or len(path.split("_")) == 3  else 'multiple_choice' ## l1, L2 questions are single choice
     batch_metadata = [{'path': path,
                         'options': path_answers[path],
-                        'positive_option': positive_options}]
+                        'positive_option': positive_options,
+                        'img_name': img_name,
+                        'answer_type': choices}]
     
     
     
@@ -147,10 +149,12 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                 
                 report_keys_paths = [f"{area_name}_{topic_name}_{elem_name}_{answer_option}_{instance_idx}" for answer_option in path_answers[path]]
                 positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=path, report_keys_paths=report_keys_paths)
-                
+                choices = 'single_choice' if len(path.split("_")) == 2 or len(path.split("_")) == 3  else 'multiple_choice' ## l1, L2 questions are single choice
                 batch_metadata = [{'path': path,
                         'options': path_answers[path],
-                        'positive_option': positive_options}]
+                        'positive_option': positive_options,
+                        'img_name': img_name,
+                        'answer_type': choices}]
                 
                 
                 
@@ -250,7 +254,9 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         batch_metadata = [{'path': path,
                                             'options': path_answers[path],
-                                            'positive_option': positive_options}]
+                                            'positive_option': positive_options,
+                                            'img_name': img_name,
+                                            'answer_type': infos[key]['answer_type']}]
                         
                         # indecies = [report_keys.index(path_in_report_keys_vector) if path_in_report_keys_vector in report_keys else -1 for path_in_report_keys_vector in report_keys_paths]
                         # indecies_tensor = torch.tensor(indecies, dtype=torch.long)
@@ -315,7 +321,9 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         batch_metadata = [{'path': path,
                                             'options': path_answers[path],
-                                            'positive_option': positive_options}]
+                                            'positive_option': positive_options,
+                                            'img_name': img_name,
+                                            'answer_type': infos[key]['answer_type']}]
                         
                         
                         
@@ -370,7 +378,9 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         batch_metadata = [{'path': path,
                                             'options': path_answers[path],
-                                            'positive_option': positive_options}]
+                                            'positive_option': positive_options,
+                                            'img_name': img_name,
+                                            'answer_type': infos[key]['answer_type']}]
                         
                         
                         
@@ -429,7 +439,9 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
                         
                         batch_metadata = [{'path': path,
                                             'options': path_answers[path],
-                                            'positive_option': positive_options}]
+                                            'positive_option': positive_options,
+                                            'img_name': img_name,
+                                            'answer_type': infos[key]['answer_type']}]
                         
                         
                         
@@ -570,7 +582,7 @@ def iterate_instances_VQA(model, img, elem, question, elem_name, topic_name, are
     return pred_vector
 
 
-def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances, pred_vector, report_keys, answer_options, report_vector_gt,
+def iterate_area_VQA(img, img_name, area, area_name, model, tokenizer, args, max_instances, pred_vector, report_keys, answer_options, report_vector_gt,
                      match_instances):
     # with torch.cuda.amp.autocast():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -607,13 +619,15 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
         if topic_name == 'infos':
             path = f"{area_name}_{top_name}"
             
-        
+        choices = 'single_choice' if len(base_path_kb.split("_")) == 2 or len(base_path_kb.split("_")) == 3  else 'multiple_choice'
         report_keys_paths = [f"{area_name}_{topic_name}_{answer_option}" for answer_option in path_answers[base_path_kb]]
         positive_options = get_positive_options(report_keys=report_keys,report_vector_ground_truth=report_vector_gt, kb_base_path=base_path_kb, report_keys_paths=report_keys_paths)
         
         batch_metadata = [{'path': base_path_kb,
                             'options': path_answers[base_path_kb],
-                            'positive_option': positive_options}]
+                            'positive_option': positive_options,
+                          'img_name': img_name ,
+                          'answer_type': choices}]
         
         if args.use_precomputed:
             out, *rest = model(img_data, input_ids=torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0),
@@ -676,8 +690,8 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                     
                     if topic_name == 'infos':
                         path = f"{area_name}_{top_name}"
-                    
-                    
+                    ##L1 and L2 questions are single choice
+                    choices = 'single_choice' if len(base_path_kb.split("_")) == 2 or len(base_path_kb.split("_")) == 3  else 'multiple_choice'
                     ### L2 question first instance
                     
                     ### it's the first instance
@@ -686,7 +700,9 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
                     
                     batch_metadata = [{'path': path,
                                         'options': path_answers[path],
-                                        'positive_option': positive_options}]
+                                        'positive_option': positive_options,
+                                        'img_name': img_name,
+                                        'answer_type': choices}]
                     
                     
                     
@@ -728,13 +744,13 @@ def iterate_area_VQA(img, area, area_name, model, tokenizer, args, max_instances
 
 
                     else:  # positive prediction
-                        pred_vector = iterate_instances_VQA(model, img_data, elem, question, elem_name, topic_name, area_name, history, tokenizer, args,
+                        pred_vector = iterate_instances_VQA(model, img_data, img_name, elem, question, elem_name, topic_name, area_name, history, tokenizer, args,
                                                             pred_vector, report_keys, max_instances, answer_options, report_vector_gt,
                                                             match_instances)
 
             else:
                 question = get_question(area_name, topic_name, area_name, first_instance=True)
-                pred_vector = iterate_instances_VQA(model, img_data, topic, question, area_name, topic_name, area_name, history, tokenizer, args,
+                pred_vector = iterate_instances_VQA(model, img_data,img_name, topic, question, area_name, topic_name, area_name, history, tokenizer, args,
                                                     pred_vector, report_keys, max_instances, answer_options, report_vector_gt, match_instances)
 
     return pred_vector
@@ -755,10 +771,10 @@ def predict_autoregressive_VQA(model, valloader, args):
 
     for i, batch in tqdm(enumerate(valloader)):
         if args.use_precomputed:
-            (img, global_embedding), report, report_vector_gt = batch
+            (img, global_embedding), img_name, report, report_vector_gt = batch
             image_data = (img, global_embedding)
         else:
-            img, report, report_vector_gt = batch
+            img, img_name, report, report_vector_gt = batch
             image_data = img
         assert len(report) == 1
         report = list(report[0].values())[0]
@@ -771,11 +787,11 @@ def predict_autoregressive_VQA(model, valloader, args):
         for area in report:
             if "sub_areas" in area:
                 for sub_area_name, sub_area in area["sub_areas"].items():
-                    pred_vector = iterate_area_VQA(image_data, sub_area, sub_area_name, model, tokenizer, args, max_instances, pred_vector, report_keys,
+                    pred_vector = iterate_area_VQA(image_data, img_name, sub_area, sub_area_name, model, tokenizer, args, max_instances, pred_vector, report_keys,
                                                    answer_options, report_vector_gt, match_instances)
 
             else:
-                pred_vector = iterate_area_VQA(image_data, area, area['area'], model, tokenizer, args, max_instances, pred_vector, report_keys,
+                pred_vector = iterate_area_VQA(image_data,img_name, area, area['area'], model, tokenizer, args, max_instances, pred_vector, report_keys,
                                                answer_options, report_vector_gt, match_instances)
 
         assert len(pred_vector) == len(report_keys)

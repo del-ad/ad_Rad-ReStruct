@@ -343,186 +343,186 @@ class Model(nn.Module):
     #     return logits, attentions
     
     ### forward logic seperated
-    def forward(self, img_and_global, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
-        return forward(model=self, img_and_global=img_and_global, input_ids=input_ids, q_attn_mask=q_attn_mask, \
-                       attn_mask=attn_mask, token_type_ids_q=token_type_ids_q, batch_metadata=batch_metadata, mode=mode)
-    
-    # ###################### CANDIDATE ######################## WORKING FORWARD PASS
     # def forward(self, img_and_global, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
+    #     return forward(model=self, img_and_global=img_and_global, input_ids=input_ids, q_attn_mask=q_attn_mask, \
+    #                    attn_mask=attn_mask, token_type_ids_q=token_type_ids_q, batch_metadata=batch_metadata, mode=mode)
+    
+    ###################### CANDIDATE ######################## WORKING FORWARD PASS
+    def forward(self, img_and_global, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
         
         
-    #     if self.args.use_precomputed:
-    #         image_features, global_embedding = img_and_global
-    #         text_features = self.question_encoder(input_ids, q_attn_mask)
-    #         cls_tokens = text_features[:, 0:1]
+        if self.args.use_precomputed:
+            image_features, global_embedding = img_and_global
+            text_features = self.question_encoder(input_ids, q_attn_mask)
+            cls_tokens = text_features[:, 0:1]
             
-    #         kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
-    #         image_options_embedding_dict = self.produce_option_embeddings_precomputed(kb_examples=kb_examples)
+            kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
+            image_options_embedding_dict = self.produce_option_embeddings_precomputed(kb_examples=kb_examples)
             
-    #         options_embedding_text, col_embedding, seperator_embedding, pad_embedding = self.encode_batch_options_precomputed(batch_metadata)
-    #         #pad_embedding = self.knowledge_base_processor._get_pad_embedding()
+            options_embedding_text, col_embedding, seperator_embedding, pad_embedding = self.encode_batch_options_precomputed(batch_metadata)
+            #pad_embedding = self.knowledge_base_processor._get_pad_embedding()
 
-    #         if self.args.use_kb_adapter:
-    #             input_tokens, ttids, attn_masks, gt_labels, batch_options = generate_full_batch_sequence_bbc_composite(self.args, cls_tokens, image_features, \
-    #                                         global_embedding, image_options_embedding_dict, \
-    #                                         text_features, seperator_embedding, \
-    #                                         pad_embedding, token_type_ids_q, \
-    #                                         batch_metadata, attn_mask)
+            if self.args.use_kb_adapter:
+                input_tokens, ttids, attn_masks, gt_labels, batch_options = generate_full_batch_sequence_bbc_composite(self.args, cls_tokens, image_features, \
+                                            global_embedding, image_options_embedding_dict, \
+                                            text_features, seperator_embedding, \
+                                            pad_embedding, token_type_ids_q, \
+                                            batch_metadata, attn_mask)
                 
-    #             out = self.bbc(inputs_embeds=input_tokens, attention_mask=attn_masks, token_type_ids=ttids, output_attentions=True)
-    #             h_log = out['last_hidden_state']
-    #             logits = self.bbc_classifier(h_log.mean(dim=1))
-    #             preds_bbc = logits.sigmoid().detach()
-    #             score_boosts, labels_to_preds = self.get_score_boosts(preds_bbc, gt_labels, batch_options)
+                out = self.bbc(inputs_embeds=input_tokens, attention_mask=attn_masks, token_type_ids=ttids, output_attentions=True)
+                h_log = out['last_hidden_state']
+                logits = self.bbc_classifier(h_log.mean(dim=1))
+                preds_bbc = logits.sigmoid().detach()
+                score_boosts, labels_to_preds = self.get_score_boosts(preds_bbc, gt_labels, batch_options)
             
-    #         ### bbc bias
-    #         # knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_manyyes_precomputed_bbcbias(options_embeddings_image=image_options_embedding_dict,
-    #         #                                                         options_embedding_text=options_embedding_text,
-    #         #                                                         g_embedding_image=global_embedding,
-    #         #                                                         col_embedding=col_embedding,
-    #         #                                                         separator_embedding=seperator_embedding,
-    #         #                                                         batch_metadata=batch_metadata,
-    #         #                                                         labels_preds=labels_to_preds,
-    #         #                                                         use_noise='no')
+            ### bbc bias
+            # knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_manyyes_precomputed_bbcbias(options_embeddings_image=image_options_embedding_dict,
+            #                                                         options_embedding_text=options_embedding_text,
+            #                                                         g_embedding_image=global_embedding,
+            #                                                         col_embedding=col_embedding,
+            #                                                         separator_embedding=seperator_embedding,
+            #                                                         batch_metadata=batch_metadata,
+            #                                                         labels_preds=labels_to_preds,
+            #                                                         use_noise='no')
 
-    #         # ### convert to SANITY EMBEDDINGS used for sanitycheck 
-    #         for idx, batch in enumerate(batch_metadata):
-    #             positive_options = set(batch['positive_option'])
-    #             for option,tensor in image_options_embedding_dict[idx].items():
-    #                 if option in positive_options:
-    #                     image_options_embedding_dict[idx][option] = global_embedding[idx:idx+1]
-    #                     del tensor
+            # ### convert to SANITY EMBEDDINGS used for sanitycheck 
+            for idx, batch in enumerate(batch_metadata):
+                positive_options = set(batch['positive_option'])
+                for option,tensor in image_options_embedding_dict[idx].items():
+                    if option in positive_options:
+                        image_options_embedding_dict[idx][option] = global_embedding[idx:idx+1]
+                        del tensor
 
 
-    #         score_boosts = []
-    #         knowledge_sequence, knowledge_ttid = generate_knowledge_sequence_vanilla_precomputed(self, options_embeddings_image=image_options_embedding_dict,
-    #                                                                 options_embedding_text=options_embedding_text,
-    #                                                                 col_embedding=col_embedding,
-    #                                                                 separator_embedding=seperator_embedding,
-    #                                                                 batch_metadata=batch_metadata,
-    #                                                                 use_noise='no')
+            score_boosts = []
+            knowledge_sequence, knowledge_ttid = generate_knowledge_sequence_vanilla_precomputed(self, options_embeddings_image=image_options_embedding_dict,
+                                                                    options_embedding_text=options_embedding_text,
+                                                                    col_embedding=col_embedding,
+                                                                    separator_embedding=seperator_embedding,
+                                                                    batch_metadata=batch_metadata,
+                                                                    use_noise='no')
             
-    #         #print("hi")
+            #print("hi")
             
-    #     else:
-    #         ## global image embedding serves as positive example in sanity check
-    #         image_features, global_embedding = self.image_encoder(img_and_global, mode=mode)
-    #         #image_features = image_features.detach()
-    #         #global_image_embedding = global_image_embedding.detach()
-    #         text_features = self.question_encoder(input_ids, q_attn_mask)
-    #         cls_tokens = text_features[:, 0:1]
+        else:
+            ## global image embedding serves as positive example in sanity check
+            image_features, global_embedding = self.image_encoder(img_and_global, mode=mode)
+            #image_features = image_features.detach()
+            #global_image_embedding = global_image_embedding.detach()
+            text_features = self.question_encoder(input_ids, q_attn_mask)
+            cls_tokens = text_features[:, 0:1]
 
-    #         # a list of dicts, where each list element represents a batch element, and each dict has options and paths
-    #         kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
+            # a list of dicts, where each list element represents a batch element, and each dict has options and paths
+            kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
 
 
-    #         ##### need to change the representation of the MISSING_KNOWLEDGE embedding
-    #         image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
+            ##### need to change the representation of the MISSING_KNOWLEDGE embedding
+            image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
             
-    #         # ### convert to SANITY EMBEDDINGS used for sanitycheck 
-    #         # for idx, batch in enumerate(batch_metadata):
-    #         #     positive_options = set(batch['positive_option'])
-    #         #     for option,tensor in image_options_embedding_dict[idx].items():
-    #         #         if option in positive_options:
-    #         #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
-    #         #             del tensor
+            # ### convert to SANITY EMBEDDINGS used for sanitycheck 
+            # for idx, batch in enumerate(batch_metadata):
+            #     positive_options = set(batch['positive_option'])
+            #     for option,tensor in image_options_embedding_dict[idx].items():
+            #         if option in positive_options:
+            #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
+            #             del tensor
 
 
             
-    #         options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata)
-    #         pad_embedding = self.knowledge_base_processor._get_pad_embedding()
+            options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata)
+            pad_embedding = self.knowledge_base_processor._get_pad_embedding()
             
-    #         knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_manyyes_precomputed(options_embeddings_image=image_options_embedding_dict,
-    #                                                                 options_embedding_text=options_embedding_text,
-    #                                                                 col_embedding=col_embedding,
-    #                                                                 separator_embedding=seperator_embedding,
-    #                                                                 batch_metadata=batch_metadata,
-    #                                                                 use_noise='no')
+            knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_manyyes_precomputed(options_embeddings_image=image_options_embedding_dict,
+                                                                    options_embedding_text=options_embedding_text,
+                                                                    col_embedding=col_embedding,
+                                                                    separator_embedding=seperator_embedding,
+                                                                    batch_metadata=batch_metadata,
+                                                                    use_noise='no')
             
             
             
                     
-    #     ### CHECK THAT THE FOLLOWING IS LEGIT!
-    #     h = self.generate_full_batch_sequence_fix(cls_tokens, image_features, global_embedding, knowledge_sequence, text_features, seperator_embedding, pad_embedding, token_type_ids_q)
+        ### CHECK THAT THE FOLLOWING IS LEGIT!
+        h = self.generate_full_batch_sequence_fix(cls_tokens, image_features, global_embedding, knowledge_sequence, text_features, seperator_embedding, pad_embedding, token_type_ids_q)
 
-    #     ### generate the BBC input 
-    #     # if self.args.use_kb_adapter:
-    #     #     batch_labels = self.generate_labels_bbc(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
-    #     #                                                 separator_embedding=seperator_embedding,
-    #     #                                                 batch_metadata=batch_metadata)
-    #     #     total_samples = self.get_total_samples(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
-    #     #                                                 separator_embedding=seperator_embedding,
-    #     #                                                 batch_metadata=batch_metadata)
+        ### generate the BBC input 
+        # if self.args.use_kb_adapter:
+        #     batch_labels = self.generate_labels_bbc(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
+        #                                                 separator_embedding=seperator_embedding,
+        #                                                 batch_metadata=batch_metadata)
+        #     total_samples = self.get_total_samples(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
+        #                                                 separator_embedding=seperator_embedding,
+        #                                                 batch_metadata=batch_metadata)
               
-    #     #     input_tokens, ttids, attn_masks, gt_labels, batch_options = self.generate_full_batch_sequence_bbc(cls_tokens, image_features, \
-    #     #                                 global_embedding, image_options_embedding_dict, \
-    #     #                                 text_features, seperator_embedding, \
-    #     #                                 pad_embedding, token_type_ids_q, \
-    #     #                                 batch_metadata, batch_labels, \
-    #     #                                 attn_mask)
+        #     input_tokens, ttids, attn_masks, gt_labels, batch_options = self.generate_full_batch_sequence_bbc(cls_tokens, image_features, \
+        #                                 global_embedding, image_options_embedding_dict, \
+        #                                 text_features, seperator_embedding, \
+        #                                 pad_embedding, token_type_ids_q, \
+        #                                 batch_metadata, batch_labels, \
+        #                                 attn_mask)
             
-    #     #     out = self.bbc(inputs_embeds=input_tokens, attention_mask=attn_masks, token_type_ids=ttids, output_attentions=True)
-    #     #     h_log = out['last_hidden_state']
-    #     #     logits = self.bbc_classifier(h_log.mean(dim=1))
-    #     #     preds = logits.sigmoid().detach()
-    #     #     score_boosts, labels_to_preds = self.get_score_boosts(preds, gt_labels, batch_options)
-    #         #print("preds rdy")
+        #     out = self.bbc(inputs_embeds=input_tokens, attention_mask=attn_masks, token_type_ids=ttids, output_attentions=True)
+        #     h_log = out['last_hidden_state']
+        #     logits = self.bbc_classifier(h_log.mean(dim=1))
+        #     preds = logits.sigmoid().detach()
+        #     score_boosts, labels_to_preds = self.get_score_boosts(preds, gt_labels, batch_options)
+            #print("preds rdy")
             
 
 
-    #     if self.args.progressive:
-    #         assert token_type_ids_q is not None
-    #         #token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+        if self.args.progressive:
+            assert token_type_ids_q is not None
+            #token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
             
-    #         ttid, attention_mask_modified = self.generate_tokentypeid_attnmask_forbatch_fix(h, token_type_ids_q, image_features, knowledge_sequence, attn_mask, knowledge_ttid)
+            ttid, attention_mask_modified = self.generate_tokentypeid_attnmask_forbatch_fix(h, token_type_ids_q, image_features, knowledge_sequence, attn_mask, knowledge_ttid)
             
             
-    #     else:
-    #         token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
-    #         token_type_ids[:, 0] = 1
-    #         token_type_ids[:, 1:image_features.size(1) + 1] = 0
-    #         token_type_ids[:, image_features.size(1) + 1:] = 1
+        else:
+            token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
+            token_type_ids[:, 0] = 1
+            token_type_ids[:, 1:image_features.size(1) + 1] = 0
+            token_type_ids[:, image_features.size(1) + 1:] = 1
 
 
-    #     #aligned = self.alignment(h)
+        #aligned = self.alignment(h)
 
-    #     out = self.fusion(inputs_embeds=h, attention_mask=attention_mask_modified, token_type_ids=ttid, output_attentions=True)
-    #     h = out['last_hidden_state']
-    #     attentions = out['attentions'][0]
-    #     logits = self.classifier(h.mean(dim=1))
+        out = self.fusion(inputs_embeds=h, attention_mask=attention_mask_modified, token_type_ids=ttid, output_attentions=True)
+        h = out['last_hidden_state']
+        attentions = out['attentions'][0]
+        logits = self.classifier(h.mean(dim=1))
         
-    #     ### clearing stuff kb_examples - list of dicts
-    #     for kb_exam in kb_examples:
-    #         for key, values in kb_exam.items():
-    #             values.clear()
-    #         kb_exam.clear()
-    #     kb_examples.clear()
+        ### clearing stuff kb_examples - list of dicts
+        for kb_exam in kb_examples:
+            for key, values in kb_exam.items():
+                values.clear()
+            kb_exam.clear()
+        kb_examples.clear()
         
         
-    #     for _ in image_options_embedding_dict:
-    #         _.clear()
-    #     image_options_embedding_dict.clear()
+        for _ in image_options_embedding_dict:
+            _.clear()
+        image_options_embedding_dict.clear()
         
-    #     ## uncomment if using options embed sanity
-    #     # for _ in options_embedding_img_sanity:
-    #     #     _.clear()
-    #     # options_embedding_img_sanity.clear()
+        ## uncomment if using options embed sanity
+        # for _ in options_embedding_img_sanity:
+        #     _.clear()
+        # options_embedding_img_sanity.clear()
         
-    #     for _ in options_embedding_text:
-    #         _.clear()
-    #     options_embedding_text.clear()
-    #     knowledge_sequence.clear()
-    #     knowledge_ttid.clear()
-    #     del attention_mask_modified, ttid, kb_examples, image_options_embedding_dict #, options_embedding_img_sanity
+        for _ in options_embedding_text:
+            _.clear()
+        options_embedding_text.clear()
+        knowledge_sequence.clear()
+        knowledge_ttid.clear()
+        del attention_mask_modified, ttid, kb_examples, image_options_embedding_dict #, options_embedding_img_sanity
         
 
-    #     if not torch.isfinite(logits).all():
-    #         print(f'{timestamp()}Fusion model produced nan/inf in ints output')
+        if not torch.isfinite(logits).all():
+            print(f'{timestamp()}Fusion model produced nan/inf in ints output')
 
-    #     if self.args.use_kb_adapter:
-    #         return logits, attentions, preds_bbc, gt_labels
-    #     else:
-    #         return logits, attentions, score_boosts
+        if self.args.use_kb_adapter:
+            return logits, attentions, preds_bbc, gt_labels
+        else:
+            return logits, attentions, score_boosts
 
     # ### ORIGINAL
     # def forward(self, img, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):

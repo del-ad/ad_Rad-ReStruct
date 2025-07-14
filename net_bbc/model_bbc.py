@@ -27,8 +27,16 @@ from net.question_encoding import QuestionEncoderBERT
 #KB
 from knowledge_base.knowledge_base_loader import KnowledgeBase, KnowledgeBasePostProcessor
 from knowledge_base.constants import Constants, Mode
+## BBC variants
+#from net_bbc.variant_bbc_noncomposite_sequence import forward, training_epoch_end, training_step, validation_epoch_end, validation_step
+#from net_bbc.variant_bbc_noncomposite_OVERFIT import forward, training_epoch_end, training_step, validation_epoch_end, validation_step
+#from net_bbc.variant_bbc_noncomposite_OVERFIT_nopatch import forward, training_epoch_end, training_step, validation_epoch_end, validation_step
+#from net_bbc.variant_bbc_noncomposite_CLSfusion_overfit_nopatch import forward, training_epoch_end, training_step, validation_epoch_end, validation_step
+#from net_bbc.variant_bbc_simpleffn_noncomposite_overfit import forward, training_epoch_end, training_step, validation_epoch_end, validation_step
+from net_bbc.variant_bbc_simpleffn_noncomposite import forward, training_epoch_end, training_step, validation_epoch_end, validation_step
 #
 from transformers import AutoTokenizer
+from transformers import get_scheduler
 from memory_profiler import profile
 
 
@@ -86,8 +94,12 @@ class MyBertEmbeddings(nn.Module):
         super().__init__()
         self.args = args
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings,
-                                                config.hidden_size // 2)  # other half is reserved for spatial image embeddings
+        # no special image positional embeddings
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+
+        # when using patch image features
+        # self.position_embeddings = nn.Embedding(config.max_position_embeddings,
+        #                                         config.hidden_size // 2)  # other half is reserved for spatial image embeddings
         if args.progressive:
             ## added knowledge token
             #self.token_type_embeddings = nn.Embedding(5, config.hidden_size)  # image = 0, history Q - 2, history A - 3, current question - 1, knowledge - 4
@@ -139,24 +151,25 @@ class MyBertEmbeddings(nn.Module):
             inputs_embeds = self.word_embeddings(input_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        ## inspecting token type embeddings
-        e0 = self.token_type_embeddings.weight[0:1]
-        e1 = self.token_type_embeddings.weight[1:2]
-        e2 = self.token_type_embeddings.weight[2:3]
-        e3 = self.token_type_embeddings.weight[3:4]
-        e4 = self.token_type_embeddings.weight[4:5]
-        e5 = self.token_type_embeddings.weight[5:6]
-        e6 = self.token_type_embeddings.weight[6:7]
-        e7 = self.token_type_embeddings.weight[7:8]
-        e8 = self.token_type_embeddings.weight[8:9]
+        # ## inspecting token type embeddings
+        # e0 = self.token_type_embeddings.weight[0:1]
+        # e1 = self.token_type_embeddings.weight[1:2]
+        # e2 = self.token_type_embeddings.weight[2:3]
+        # e3 = self.token_type_embeddings.weight[3:4]
+        # e4 = self.token_type_embeddings.weight[4:5]
+        # e5 = self.token_type_embeddings.weight[5:6]
+        # e6 = self.token_type_embeddings.weight[6:7]
+        # e7 = self.token_type_embeddings.weight[7:8]
+        # e8 = self.token_type_embeddings.weight[8:9]
 
 
 
         embeddings = inputs_embeds + token_type_embeddings
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
-            position_embeddings = torch.cat((self.img_pos_embeddings.to(position_embeddings.device), position_embeddings),
-                                            dim=-1)  # add image position embeddings and sequence position embeddings
+            ## no special image positional embeddings ---- to be used when no patch image features are used in the bbc fusion sequence
+            # position_embeddings = torch.cat((self.img_pos_embeddings.to(position_embeddings.device), position_embeddings),
+            #                                 dim=-1)  # add image position embeddings and sequence position embeddings
             embeddings += position_embeddings
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
@@ -175,7 +188,7 @@ class MyBertModel(BertModel):
 
         self.embeddings = MyBertEmbeddings(config, args=args)
         self.encoder = BertEncoder(config)
-
+        self.cls_fusion_token = nn.Parameter(torch.randn(1, 1, args.hidden_size))
         self.pooler = BertPooler(config) if add_pooling_layer else None
 
         # Initialize weights and apply final processing
@@ -200,168 +213,53 @@ class ModelBBC(nn.Module):
         self.knowledge_base_processor = KnowledgeBasePostProcessor(text_encoder=self.question_encoder, image_encoder=self.image_encoder)
 
         
-        self.fusion_config = BertConfig(vocab_size=1, hidden_size=args.hidden_size, num_hidden_layers=args.n_layers,
-                                        num_attention_heads=args.heads, intermediate_size=args.hidden_size * 4,
-                                        max_position_embeddings=args.max_position_embeddings)
+        # self.fusion_config = BertConfig(vocab_size=1, hidden_size=args.hidden_size, num_hidden_layers=args.n_layers,
+        #                                 num_attention_heads=args.heads, intermediate_size=args.hidden_size * 4,
+        #                                 max_position_embeddings=args.max_position_embeddings)
 
-        # self.alignment_image = nn.Sequential(
-        #     nn.Linear(args.hidden_size, args.hidden_size),
-        #     nn.ReLU()
-        # )
+        # self.bbc_fusion = MyBertModel(config=self.fusion_config, args=args)
+        # self.bbc_fusion.train()
 
-        # self.alignment_text = nn.Sequential(
-        #     nn.Linear(args.hidden_size, args.hidden_size),
-        #     nn.ReLU()
-        # )
-        self.fusion = MyBertModel(config=self.fusion_config, args=args)
+        self.bbc_simple_ffn = nn.Sequential(
+            nn.Linear(args.hidden_size * 2, 768),
+            nn.ReLU(),
+            nn.Dropout(args.classifier_dropout),
+            nn.Linear(768, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Dropout(args.classifier_dropout),
+            nn.Linear(64, 1),
+        )
 
         if "vqarad" in args.data_dir:
-            self.classifier = nn.Linear(args.hidden_size, args.num_classes)
+            self.bbc_classifier = nn.Linear(args.hidden_size, args.num_classes)
         else:
-            self.classifier = nn.Sequential(
-                ## comment out when training / doing non overfit stuff
-                ### Original - comment out next line during overfitting
-                nn.Dropout(args.classifier_dropout),
-                nn.Linear(args.hidden_size, 256),
-                nn.ReLU(),
-                # nn.BatchNorm1d(256),
-                ### output is a single output
-                nn.Linear(256, 1))
+            if not args.use_simple_classifier:
+                self.bbc_classifier = nn.Sequential(
+                    ## comment out when training / doing non overfit stuff
+                    ### Original - comment out next line during overfitting
+                    nn.Dropout(args.classifier_dropout),
+                    nn.Linear(args.hidden_size, 256),
+                    nn.ReLU(),
+                    # nn.BatchNorm1d(256),
+                    ### output is a single output
+                    nn.Linear(256, 1))
+                self.bbc_classifier.train()
 
-    ###################### CANDIDATE ######################## WORKING FORWARD PASS
-    def forward(self, img_and_global, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
-        
-        
-        if self.args.use_precomputed:
-            image_features, global_embedding = img_and_global
-            text_features = self.question_encoder(input_ids, q_attn_mask)
-            cls_tokens = text_features[:, 0:1]
-            
-            kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
-            image_options_embedding_dict = self.produce_option_embeddings_precomputed(kb_examples=kb_examples)
-            
-            # options_embedding_text, col_embedding, seperator_embedding, pad_embedding = self.encode_batch_options_precomputed(batch_metadata)
-            #pad_embedding = self.knowledge_base_processor._get_pad_embedding()
-            seperator_embedding, pad_embedding = self.encode_batch_sep_pad_precomputed(batch_metadata)
-            
-            # knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_manyyes_precomputed(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
-            #                                                         options_embedding_text=options_embedding_text,
-            #                                                         col_embedding=col_embedding,
-            #                                                         separator_embedding=seperator_embedding,
-            #                                                         batch_metadata=batch_metadata,
-            #                                                         use_noise='no')
-
-            batch_labels = self.generate_labels_bbc(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
-                                                                    separator_embedding=seperator_embedding,
-                                                                    batch_metadata=batch_metadata)                                                                                
-            #print("hi")
-            
-        else:
-            ## global image embedding serves as positive example in sanity check
-            image_features, global_embedding = self.image_encoder(img_and_global, mode=mode)
-            #image_features = image_features.detach()
-            #global_image_embedding = global_image_embedding.detach()
-            text_features = self.question_encoder(input_ids, q_attn_mask)
-            cls_tokens = text_features[:, 0:1]
-
-            # a list of dicts, where each list element represents a batch element, and each dict has options and paths
-            kb_examples = self.knowledge_base.get_images_for_paths(batch_metadata)
-
-
-            ##### need to change the representation of the MISSING_KNOWLEDGE embedding
-            image_options_embedding_dict = self.produce_option_embeddings_batched(kb_examples=kb_examples, image_encoder=self.image_encoder)
-            
-            # ### convert to SANITY EMBEDDINGS used for sanitycheck 
-            # for idx, batch in enumerate(batch_metadata):
-            #     positive_options = set(batch['positive_option'])
-            #     for option,tensor in image_options_embedding_dict[idx].items():
-            #         if option in positive_options:
-            #             image_options_embedding_dict[idx][option] = global_image_embedding[idx:idx+1]
-            #             del tensor
-
-            batch_labels = self.generate_labels_bbc(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
-                                                                    separator_embedding=seperator_embedding,
-                                                                    batch_metadata=batch_metadata)    
-
-            
-            options_embedding_text, col_embedding, seperator_embedding = self.knowledge_base_processor.encode_batch_options_batched(batch_metadata)
-            pad_embedding = self.knowledge_base_processor._get_pad_embedding()
-            
-            # knowledge_sequence, knowledge_ttid = self.generate_knowledge_sequence_manyyes_precomputed(global_img_embeddings=global_embedding, options_embeddings_image=image_options_embedding_dict,
-            #                                                         options_embedding_text=options_embedding_text,
-            #                                                         col_embedding=col_embedding,
-            #                                                         separator_embedding=seperator_embedding,
-            #                                                         batch_metadata=batch_metadata,
-            #                                                         use_noise='no')
-            
-            
-            
-                    
-        ### CHECK THAT THE FOLLOWING IS LEGIT!
-        h, ttids, attn_masks, gt_labels = self.generate_full_batch_sequence_bbc(cls_tokens, image_features, \
-                                                global_embedding, image_options_embedding_dict, \
-                                                text_features, seperator_embedding, \
-                                                pad_embedding, token_type_ids_q, \
-                                                batch_metadata, batch_labels, \
-                                                attn_mask)
-
-        # g_list = []
-        # for lst in gt_labels:
-        #     g_list.extend(lst)
-        
-        # g_list = g_list
-
-        if self.args.progressive:
-            assert token_type_ids_q is not None
-            #token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
-            
-            #ttid, attention_mask_modified = self.generate_tokentypeid_attnmask_forbatch_bbc(h, token_type_ids_q, image_features, attn_mask)
-            
-            
-        else:
-            token_type_ids = torch.zeros(h.size(0), h.size(1), dtype=torch.long, device=h.device)
-            token_type_ids[:, 0] = 1
-            token_type_ids[:, 1:image_features.size(1) + 1] = 0
-            token_type_ids[:, image_features.size(1) + 1:] = 1
-
-
-        #aligned = self.alignment(h)
-
-        out = self.fusion(inputs_embeds=h, attention_mask=attn_masks, token_type_ids=ttids, output_attentions=True)
-        h = out['last_hidden_state']
-        attentions = out['attentions'][0]
-        logits = self.classifier(h.mean(dim=1))
-        
-        ### clearing stuff kb_examples - list of dicts
-        for kb_exam in kb_examples:
-            for key, values in kb_exam.items():
-                values.clear()
-            kb_exam.clear()
-        kb_examples.clear()
-        
-        
-        for _ in image_options_embedding_dict:
-            _.clear()
-        image_options_embedding_dict.clear()
-        
-        ## uncomment if using options embed sanity
-        # for _ in options_embedding_img_sanity:
-        #     _.clear()
-        # options_embedding_img_sanity.clear()
-        
-        # for _ in options_embedding_text:
-        #     _.clear()
-        # options_embedding_text.clear()
-
-        del kb_examples, image_options_embedding_dict #, options_embedding_img_sanity
-        
-
-        if not torch.isfinite(logits).all():
-            print(f'{timestamp()}Fusion model produced nan/inf in ints output')
-
-        return logits, gt_labels, attentions
     
 
+    def forward(self, img_and_global, input_ids, q_attn_mask, attn_mask, token_type_ids_q=None, batch_metadata=None, mode='train'):
+        return forward(model=self, img_and_global=img_and_global, \
+                        input_ids=input_ids, q_attn_mask=q_attn_mask, \
+                        attn_mask=attn_mask, token_type_ids_q=token_type_ids_q, \
+                        batch_metadata=batch_metadata, mode=mode)
+        
+    def get_forward_origin(self):
+        # Access the _origin_file attribute of the imported function
+        return forward._origin_file
+        
+        
     def get_global_embeddings_in_batches(self, encoder, images, max_batch_size, device):
         """
         encoder: your image_encoder
@@ -472,15 +370,6 @@ class ModelBBC(nn.Module):
 
         return pooled_embeddings
     
-    ### TRASH - delete
-    def combine_knowledge(prediction_tensors):
-        # prediction_tensor is of shape (batch_size, n_tokens, 1, 768)
-        # grab the tensor corresponding to the batch
-
-        num_batches = prediction_tensors.size(0) # the first dimension is the batch dimesnion
-        for batch_idx in range(num_batches):
-            batch_tensor = prediction_tensors[batch_idx: batch_idx+1] # slices the tensor so that (num_tokebs, 1, 768) tensor is returned
-            num_tokens_in_batch_tensor = batch_tensor.size(0)
     
     def encode_batch_options_precomputed(self, batch_metadata):
         text_options_embeddings = [{} for _ in batch_metadata]
@@ -569,976 +458,8 @@ class ModelBBC(nn.Module):
                     
         return kb_batch_embeddings
        
-    
-    def produce_option_sanity_embeddings_fast_fix(self, kb_examples, global_embeddings, batch_metadata, verify=False):
-        # Pre-allocate result list
-        sanity_embeddings = [{} for _ in batch_metadata]
-        detached_global_embeddings = global_embeddings.clone().detach()
 
-        for idx, batch in enumerate(batch_metadata):
-            pos_set = set(batch['positive_option'])  # Set lookup is faster
-            #global_emb = detached_global_embeddings[idx:idx+1].clone().detach()  # Slice once per sample
-            global_emb = detached_global_embeddings[idx:idx+1].clone() # no detach, already done
-
-            ##dry run fix
-            #kb_dict = kb_examples[idx]
-            for option in batch['options']:
-                if option in pos_set:
-                    sanity_embeddings[idx][option] = global_emb
-                else:
-                    sanity_embeddings[idx][option] = kb_examples[idx][option]
-            #kb_dict.clear()
-
-        if verify:
-            for idx, batch in enumerate(batch_metadata):
-                pos_set = set(batch['positive_option'])
-                for option in batch['options']:
-                    sanity = sanity_embeddings[idx][option]
-                    original = kb_examples[idx][option]
-                    global_emb = detached_global_embeddings[idx:idx+1]
-                    if option in pos_set:
-                        assert not torch.equal(sanity, original), \
-                            f"Positive option '{option}' should not match original tensor."
-                        assert torch.equal(sanity, global_emb), \
-                            f"Positive option '{option}' does not match global embedding."
-                    else:
-                        assert torch.equal(sanity, original), \
-                            f"Negative option '{option}' should remain unchanged."
-
-        return sanity_embeddings
-    
-    def generate_knowledge_sequence_fix(self, options_embeddings_image, options_embedding_text, col_embedding, separator_embedding, batch_metadata, use_noise='no'):
-        used_device = next(self.image_encoder.parameters()).device
-        
-        assert len(options_embeddings_image) == len(options_embedding_text)
-        
-        # Move static embeddings to the correct device once
-        col_embedding = col_embedding.to(device=used_device)
-        separator_embedding = separator_embedding.to(device=used_device)
-        
-        ### move tensors to GPU
-        for batch in range(len(options_embeddings_image)):
-            img_dict = options_embeddings_image[batch]
-            txt_dict = options_embedding_text[batch]
-            for key in img_dict.keys():
-                img_dict[key] = img_dict[key].to(device=used_device)
-                txt_dict[key] = txt_dict[key].to(device=used_device)
-
-        batch_knowledge_sequence = []
-        batch_knowledge_ttid = []
-
-        for batch_index in range(len(options_embedding_text)):
-            img_options_embedding = options_embeddings_image[batch_index]
-            text_option_embedding = options_embedding_text[batch_index]
-            
-            assert img_options_embedding.keys() == text_option_embedding.keys(), \
-                "Mismatched keys between image and text embeddings."
-
-
-            total_seq_len = 0
-            for option in batch_metadata[batch_index]['options']:
-                img_emb = img_options_embedding[option]
-                text_emb = text_option_embedding[option]       # (num_tokens x 1 x 768)
-
-
-                ### replace embeddings with 0 / noise
-                if use_noise == 'yes':
-                    img_emb = torch.zeros(img_emb.size(0), 1, 768).to(device=used_device)
-                    text_emb =  torch.zeros(text_emb.size(0), 1, 768).to(device=used_device)
-                
-                
-                total_seq_len += text_emb.size(0)
-                total_seq_len += col_embedding.size(0)      # usually 1
-                total_seq_len += img_emb.size(0)
-                total_seq_len += separator_embedding.size(0) # usually 1
-                
-
-            ttid_tensor = torch.empty(total_seq_len, dtype=torch.long, device=used_device)
-
-            pieces = []
-            cursor = 0
-            
-            for option in batch_metadata[batch_index]['options']:
-                text_emb = text_option_embedding[option]   # (num_tokens × 1 × 768), requires_grad=True
-                img_emb  = img_options_embedding[option]   # (num_tokens × 1 × 768), requires_grad=True
-
-                if use_noise == 'yes':
-                    text_emb = torch.zeros_like(text_emb).detach()
-                    img_emb  = torch.zeros_like(img_emb).detach()
-
-
-                # ─(a) TEXT EMBEDDING──────────────────────────────────────────────────────────────
-                pieces.append(text_emb)
-                n_text = text_emb.size(0)
-                # All text tokens share token‐type ID “5” (for example). Adjust if needed.
-                ttid_tensor[cursor : cursor + n_text] = 5
-                cursor += n_text
-                # ─(b) COLUMN EMBEDDING────────────────────────────────────────────────────────────
-                pieces.append(col_embedding)
-                n_col = col_embedding.size(0)  # usually 1
-                # We give col_embedding the SAME ttid as text (5), or pick your convention.
-                ttid_tensor[cursor : cursor + n_col] = 5
-                cursor += n_col
-                # ─(c) IMAGE EMBEDDING─────────────────────────────────────────────────────────────
-                pieces.append(img_emb)
-                n_img = img_emb.size(0)
-                # All image tokens share token‐type ID “6,” for instance.
-                ttid_tensor[cursor : cursor + n_img] = 6
-                cursor += n_img
-                # ─(d) SEPARATOR EMBEDDING────────────────────────────────────────────────────────
-                pieces.append(separator_embedding)
-                n_sep = separator_embedding.size(0)  # usually 1
-                ttid_tensor[cursor : cursor + n_sep] = 6
-                cursor += n_sep
-                
-            assert cursor == total_seq_len, f"Cursor mismatch: {cursor} vs {total_seq_len}"
-            
-            
-
-            # ─── (4C) Concatenate all pieces into one long tensor ─────────────────────────────────
-            # Because `text_emb` and `img_emb` were not detached, they carry requires_grad=True,
-            # so the resulting `batch_tensor` automatically becomes part of the autograd graph.
-            batch_tensor = torch.cat(pieces, dim=0)  # shape: (total_seq_len × 1 × 768)
-            # At this point: batch_tensor.requires_grad == True
-            # The `.grad_fn` on batch_tensor will point back into each text_emb and img_emb.
-
-            # ─── (4D) Append to the outputs ────────────────────────────────────────────────────────
-            
-
-            
-            batch_knowledge_sequence.append(batch_tensor)
-            batch_knowledge_ttid.append(ttid_tensor)
-            
-            pieces.clear()
-            del pieces
-
-        return batch_knowledge_sequence, batch_knowledge_ttid
-    
-    def generate_knowledge_sequence_vanilla_precomputed(self, options_embeddings_image, options_embedding_text, col_embedding, separator_embedding, batch_metadata, use_noise='no'):
-        used_device = next(self.image_encoder.parameters()).device
-        
-        assert len(options_embeddings_image) == len(options_embedding_text)
-        #sep_token_embedding = self.tokenizer.encode(self.tokenizer.sep_token_id)
-        # Move static embeddings to the correct device once
-        col_embedding = col_embedding.to(device=used_device)
-        separator_embedding = separator_embedding.to(device=used_device)
-        #global_embeddings_image = global_embeddings_image.to(used_device=used_device)
-        
-        ### move tensors to GPU
-        for batch in range(len(options_embeddings_image)):
-            img_dict = options_embeddings_image[batch]
-            txt_dict = options_embedding_text[batch]
-            for key in img_dict.keys():
-                img_dict[key] = img_dict[key].to(device=used_device)
-                txt_dict[key] = txt_dict[key].to(device=used_device)
-
-        batch_knowledge_sequence = []
-        batch_knowledge_ttid = []
-
-        for batch_index in range(len(options_embedding_text)):
-            img_options_embedding = options_embeddings_image[batch_index]
-            text_option_embedding = options_embedding_text[batch_index]
-            
-            assert img_options_embedding.keys() == text_option_embedding.keys(), \
-                "Mismatched keys between image and text embeddings."
-
-
-            total_seq_len = 0
-            for option in batch_metadata[batch_index]['options']:
-                img_emb = img_options_embedding[option]
-                text_emb = text_option_embedding[option]       # (num_tokens x 1 x 768)
-
-
-                ### replace embeddings with 0 / noise
-                if use_noise == 'yes':
-                    img_emb = torch.zeros(img_emb.size(0), 1, 768).to(device=used_device)
-                    text_emb =  torch.zeros(text_emb.size(0), 1, 768).to(device=used_device)
-                
-                
-                total_seq_len += text_emb.size(0)
-                total_seq_len += col_embedding.size(0)      # usually 1
-                total_seq_len += 1 if img_emb.size(0) > 1 else img_emb.size(0) ### for l1_yes questions, we'll max later, so still only 1 token
-                total_seq_len += separator_embedding.size(0) # usually 1
-                
-
-            ttid_tensor = torch.empty(total_seq_len, dtype=torch.long, device=used_device)
-
-            pieces = []
-            cursor = 0
-            
-            for option in batch_metadata[batch_index]['options']:
-                img_emb  = img_options_embedding[option]   # (num_tokens × 1 × 768), requires_grad=True
-                text_emb = text_option_embedding[option]   # (num_tokens × 1 × 768), requires_grad=True
-
-                ### in vanilla mode we have yes:1x1768 img embedding
-                if img_emb.size(0) > 1:
-                    img_emb, _ = torch.max(img_emb, dim=0, keepdim=True)
-
-                if use_noise == 'yes':
-                    text_emb = torch.zeros_like(text_emb).detach()
-                    img_emb  = torch.zeros_like(img_emb).detach()
-
-
-                # ─(a) TEXT EMBEDDING──────────────────────────────────────────────────────────────
-                pieces.append(text_emb)
-                n_text = text_emb.size(0)
-                # All text tokens share token‐type ID “5” (for example). Adjust if needed.
-                ttid_tensor[cursor : cursor + n_text] = 5
-                cursor += n_text
-                # ─(b) COLUMN EMBEDDING────────────────────────────────────────────────────────────
-                pieces.append(col_embedding)
-                n_col = col_embedding.size(0)  # usually 1
-                # We give col_embedding the SAME ttid as text (5), or pick your convention.
-                ttid_tensor[cursor : cursor + n_col] = 5
-                cursor += n_col
-                # ─(c) IMAGE EMBEDDING─────────────────────────────────────────────────────────────
-                pieces.append(img_emb)
-                n_img = img_emb.size(0)
-                # All image tokens share token‐type ID “6,” for instance.
-                ttid_tensor[cursor : cursor + n_img] = 6
-                cursor += n_img
-                # ─(d) SEPARATOR EMBEDDING────────────────────────────────────────────────────────
-                pieces.append(separator_embedding)
-                n_sep = separator_embedding.size(0)  # usually 1
-                ttid_tensor[cursor : cursor + n_sep] = 6
-                cursor += n_sep
-                
-            assert cursor == total_seq_len, f"Cursor mismatch: {cursor} vs {total_seq_len}"
-            
-            
-
-            # ─── (4C) Concatenate all pieces into one long tensor ─────────────────────────────────
-            # Because `text_emb` and `img_emb` were not detached, they carry requires_grad=True,
-            # so the resulting `batch_tensor` automatically becomes part of the autograd graph.
-            batch_tensor = torch.cat(pieces, dim=0)  # shape: (total_seq_len × 1 × 768)
-            # At this point: batch_tensor.requires_grad == True
-            # The `.grad_fn` on batch_tensor will point back into each text_emb and img_emb.
-
-            # ─── (4D) Append to the outputs ────────────────────────────────────────────────────────
-            
-
-            
-            batch_knowledge_sequence.append(batch_tensor)
-            batch_knowledge_ttid.append(ttid_tensor)
-            
-            pieces.clear()
-            del pieces
-
-        return batch_knowledge_sequence, batch_knowledge_ttid
-    
-    
-    def generate_knowledge_sequence_bigyes_precomputed(self, options_embeddings_image, options_embedding_text, col_embedding, separator_embedding, batch_metadata, use_noise='no'):
-        used_device = next(self.image_encoder.parameters()).device
-        
-        assert len(options_embeddings_image) == len(options_embedding_text)
-        #sep_token_embedding = self.tokenizer.encode(self.tokenizer.sep_token_id)
-        # Move static embeddings to the correct device once
-        col_embedding = col_embedding.to(device=used_device)
-        separator_embedding = separator_embedding.to(device=used_device)
-        #global_embeddings_image = global_embeddings_image.to(used_device=used_device)
-        
-        ### move tensors to GPU
-        for batch in range(len(options_embeddings_image)):
-            img_dict = options_embeddings_image[batch]
-            txt_dict = options_embedding_text[batch]
-            for key in img_dict.keys():
-                img_dict[key] = img_dict[key].to(device=used_device)
-                txt_dict[key] = txt_dict[key].to(device=used_device)
-
-        batch_knowledge_sequence = []
-        batch_knowledge_ttid = []
-
-        for batch_index in range(len(options_embedding_text)):
-            img_options_embedding = options_embeddings_image[batch_index]
-            text_option_embedding = options_embedding_text[batch_index]
-            
-            assert img_options_embedding.keys() == text_option_embedding.keys(), \
-                "Mismatched keys between image and text embeddings."
-
-
-            total_seq_len = 0
-            for option in batch_metadata[batch_index]['options']:
-                img_emb = img_options_embedding[option]
-                text_emb = text_option_embedding[option]       # (num_tokens x 1 x 768)
-
-
-                ### replace embeddings with 0 / noise
-                if use_noise == 'yes':
-                    img_emb = torch.zeros(img_emb.size(0), 1, 768).to(device=used_device)
-                    text_emb =  torch.zeros(text_emb.size(0), 1, 768).to(device=used_device)
-                
-                # vanilla
-                # total_seq_len += text_emb.size(0)
-                # total_seq_len += col_embedding.size(0)      # usually 1
-                # total_seq_len += 1 if img_emb.size(0) > 1 else img_emb.size(0) ### for l1_yes questions, we'll max later, so still only 1 token
-                # total_seq_len += separator_embedding.size(0) # usually 1
-                
-                # vanilla
-                total_seq_len += text_emb.size(0)
-                total_seq_len += col_embedding.size(0)      # usually 1
-                total_seq_len += img_emb.size(0)  ### for l1_yes questions, we'll max later, so still only 1 token
-                total_seq_len += separator_embedding.size(0) # usually 1
-                
-
-            ttid_tensor = torch.empty(total_seq_len, dtype=torch.long, device=used_device)
-
-            pieces = []
-            cursor = 0
-            
-            for option in batch_metadata[batch_index]['options']:
-                img_emb  = img_options_embedding[option]   # (num_tokens × 1 × 768), requires_grad=True
-                text_emb = text_option_embedding[option]   # (num_tokens × 1 × 768), requires_grad=True
-
-                ### in vanilla mode we have yes:1x1768 img embedding
-                # if img_emb.size(0) > 1:
-                #     img_emb, _ = torch.max(img_emb, dim=0, keepdim=True)
-
-                if use_noise == 'yes':
-                    text_emb = torch.zeros_like(text_emb).detach()
-                    img_emb  = torch.zeros_like(img_emb).detach()
-
-
-                # ─(a) TEXT EMBEDDING──────────────────────────────────────────────────────────────
-                pieces.append(text_emb)
-                n_text = text_emb.size(0)
-                # All text tokens share token‐type ID “5” (for example). Adjust if needed.
-                ttid_tensor[cursor : cursor + n_text] = 5
-                cursor += n_text
-                # ─(b) COLUMN EMBEDDING────────────────────────────────────────────────────────────
-                pieces.append(col_embedding)
-                n_col = col_embedding.size(0)  # usually 1
-                # We give col_embedding the SAME ttid as text (5), or pick your convention.
-                ttid_tensor[cursor : cursor + n_col] = 5
-                cursor += n_col
-                # ─(c) IMAGE EMBEDDING─────────────────────────────────────────────────────────────
-                if option == 'yes' and img_emb.size(0) > 1:
-                    for gl_embed_idx in range(img_emb.size(0)):
-                        pieces.append(img_emb[gl_embed_idx : gl_embed_idx + 1])
-                    n_img = img_emb.size(0)
-                    # All image tokens share token‐type ID “6,” for instance.
-                    ttid_tensor[cursor : cursor + n_img] = 6
-                    cursor += n_img
-                else:
-                    pieces.append(img_emb)
-                    n_img = img_emb.size(0)
-                    # All image tokens share token‐type ID “6,” for instance.
-                    ttid_tensor[cursor : cursor + n_img] = 6
-                    cursor += n_img
-                # ─(d) SEPARATOR EMBEDDING────────────────────────────────────────────────────────
-                pieces.append(separator_embedding)
-                n_sep = separator_embedding.size(0)  # usually 1
-                ttid_tensor[cursor : cursor + n_sep] = 6
-                cursor += n_sep
-                
-            assert cursor == total_seq_len, f"Cursor mismatch: {cursor} vs {total_seq_len}"
-            
-            
-
-            # ─── (4C) Concatenate all pieces into one long tensor ─────────────────────────────────
-            # Because `text_emb` and `img_emb` were not detached, they carry requires_grad=True,
-            # so the resulting `batch_tensor` automatically becomes part of the autograd graph.
-            batch_tensor = torch.cat(pieces, dim=0)  # shape: (total_seq_len × 1 × 768)
-            # At this point: batch_tensor.requires_grad == True
-            # The `.grad_fn` on batch_tensor will point back into each text_emb and img_emb.
-
-            # ─── (4D) Append to the outputs ────────────────────────────────────────────────────────
-            
-
-            
-            batch_knowledge_sequence.append(batch_tensor)
-            batch_knowledge_ttid.append(ttid_tensor)
-            
-            pieces.clear()
-            del pieces
-
-        return batch_knowledge_sequence, batch_knowledge_ttid
-    
-    def generate_labels_bbc(self, global_img_embeddings, options_embeddings_image, separator_embedding, batch_metadata):
-        used_device = next(self.image_encoder.parameters()).device
-        batch_labels = []
-        #sep_token_embedding = self.tokenizer.encode(self.tokenizer.sep_token_id)
-        # Move static embeddings to the correct device once
-        for batch_index in range(len(options_embeddings_image)):
-            batch_labels.append([])
-            img_options_embedding = options_embeddings_image[batch_index]
-            
-            for option in batch_metadata[batch_index]['options']:
-                img_emb = img_options_embedding[option]
-                
-                # many yes - L1 yes question - produces 
-                if option == 'yes' and img_emb.size(0) > 1:
-                    for global_embed_option in range(img_emb.size(0)):
-                        if option in batch_metadata[batch_index]['positive_option']:
-                            batch_labels[batch_index].append(1)
-                        else:
-                            batch_labels[batch_index].append(0)
-                ## non L1 uestion
-                else:
-                    if option in batch_metadata[batch_index]['positive_option']:
-                        batch_labels[batch_index].append(1)
-                    else:
-                        batch_labels[batch_index].append(0)
-        return batch_labels
-    
-    def generate_full_batch_sequence_bbc(self, cls_tokens, image_features, \
-                                        global_embeddings, image_options_g_embeddings, \
-                                        text_features, seperator_embedding, \
-                                        pad_embedding, token_type_ids_q, \
-                                        batch_metadata, batch_labels, \
-                                        attn_mask):
-        """
-        This version pre-allocates a single tensor of shape
-        (batch_size, max_position_embeddings, 768)
-        and then fills in each row [i, :] by copying the
-        sub-segments (cls_tok, img_feat, know_feat, txt_feat)
-        directly into that buffer, up to max_position_embeddings.
-        """
-        ## by the end I want to have a sequence for each sample in the batch
-        ## need to go through each batch element -> from it create N batch samples -> for each batch sample create its sequence
-        ## what are the common and repeated parts, what is unique
-        ### 
-
-        batch_size = cls_tokens.size(0)
-        hidden_dim_size = cls_tokens.size(-1)  # typically 768
-        sequence_length = self.args.max_position_embeddings
-
-        # 1) Create the output buffer all at once. By default, it's zero-initialized.
-        #    We match the dtype/device of cls_tokens for safety.
-        device = cls_tokens.device
-        dtype = cls_tokens.dtype
-        h = cls_tokens.new_zeros((sum(len(batch) for batch in batch_labels), sequence_length, hidden_dim_size), dtype=dtype, device=device)
-        ttids = token_type_ids_q.new_zeros((sum(len(batch) for batch in batch_labels), sequence_length), dtype=token_type_ids_q.dtype, device=device)
-        attn_masks_modified = attn_mask.new_zeros((sum(len(batch) for batch in batch_labels), sequence_length), dtype=attn_mask.dtype, device=device)
-
-        gt_for_batch = []
-
-        ## go through each batch
-        h_write_pos = 0
-        for batch_idx in range(batch_size):
-            gt_for_batch.append([])
-
-            ### things that should be common for each new batch element
-            cls_tokens_for_batch = cls_tokens[batch_idx:batch_idx+1]
-            image_tokens_for_batch = image_features[batch_idx:batch_idx+1]
-            #num_qa_tokens_for_batch = sum(token_type_ids_q[batch_idx]).item()
-            #text_tokens_for_batch = text_features[batch_size : batch_size+1, 1:num_qa_tokens]
-            global_image_embedding = global_embeddings[batch_idx: batch_idx+1]
-
-            kb_example_embeddings = image_options_g_embeddings[batch_idx] # dict containing each option for the batch
-            ttids_for_batch = token_type_ids_q[batch_idx]
-            attn_mask_for_batch = attn_mask[batch_idx]
-
-
-            for option in batch_metadata[batch_idx]['options']:
-                # L1 questio
-                
-                if option == 'yes' and kb_example_embeddings[option].size(0) > 1:
-                    # global embeddings for each l1 yes option
-                    for l1_option in range(kb_example_embeddings[option].size(0)):
-
-                        write_pos = 0
-                        ### CLS token
-                        h[h_write_pos, write_pos : write_pos+1, :] = cls_tokens_for_batch
-                        h_inspect = h[h_write_pos]
-                        ### CLS token - attn mask
-                        ttids[h_write_pos, write_pos : write_pos + 1] = 1
-                        attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1
-
-                        write_pos += 1
-
-
-                        ### Path Image Features
-                        img_feat_len = image_tokens_for_batch.size(1)
-                        # How many image tokens can we still fit?
-                        remain = sequence_length - write_pos
-                        copy_len = min(img_feat_len, remain)
-                        if copy_len > 0:
-                            # We slice both sides:
-                            #   - source: img_feat_i[:, :copy_len, :] → (1, copy_len, D)
-                            #   - destination: h[i, write_pos : write_pos+copy_len, :]
-                            h[h_write_pos, write_pos : write_pos+copy_len, :] = image_tokens_for_batch[:, :copy_len, :]
-                            h_inspect = h[h_write_pos]
-                            ### Patch Image Features - ttid + attn_mask
-                            ttids[h_write_pos, write_pos : write_pos+copy_len] = 4
-                            attn_masks_modified[h_write_pos, write_pos : write_pos+copy_len] = 1
-
-                            write_pos += copy_len
-
-
-                        # SEP embedding
-                        h[h_write_pos, write_pos : write_pos+1, :] = seperator_embedding
-                        h_inspect = h[h_write_pos]
-                        ### SEP embedding - ttid + attn_mask
-                        ttids[h_write_pos, write_pos : write_pos + 1] = 4
-                        attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1                        
-                        
-                        write_pos += 1
-
-
-
-                        ### Global input image embedding
-                        h[h_write_pos, write_pos : write_pos+1, :] = global_image_embedding
-                        h_inspect = h[h_write_pos]
-                        ### Global input image embedding - ttid + attn_mask
-                        ttids[h_write_pos, write_pos : write_pos + 1] = 6
-                        attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1
-
-                        write_pos += 1
-
-
-
-                        # SEP embedding
-                        h[h_write_pos, write_pos : write_pos+1, :] = seperator_embedding
-                        h_inspect = h[h_write_pos]
-                        ### Global input image embedding - ttid + attn_mask
-                        ttids[h_write_pos, write_pos : write_pos + 1] = 6
-                        attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1
-                        
-                        write_pos += 1
-
-
-
-                        ## Knowledge image embedding
-                        knowledge_global_embedding = kb_example_embeddings[option][l1_option: l1_option+1]
-                        know_len = knowledge_global_embedding.size(1)
-                        remain = sequence_length - write_pos
-                        copy_len = min(know_len, remain)
-                        if copy_len > 0:
-                            h[h_write_pos, write_pos : write_pos+copy_len, :] = knowledge_global_embedding
-                            h_inspect = h[h_write_pos]
-                            ### Knowledge image embedding - ttid + attn_mask
-                            ttids[h_write_pos, write_pos : write_pos+copy_len] = 6
-                            attn_masks_modified[h_write_pos, write_pos : write_pos+copy_len] = 1
-                            
-                            write_pos += copy_len
-
-                        
-
-
-                        ### Question features
-                        # txt_feat_i = text_features[i : i+1, 1:num_qa_tokens]  # (1, T-1, D)
-                        # #inspct_txt_feat = text_features[i]
-                        # #inspct_txt_feat2 = text_features[i : i + 1, 1:num_qa_tokens]
-                        # #inspct_txt_feat3 = text_features[i : i + 1, 1:num_qa_tokens, 0:5]
-                        # txt_len = txt_feat_i.size(1)
-                        # remain = sequence_length - write_pos
-                        # copy_len = min(txt_len, remain)
-                        # if copy_len > 0:
-                        #     h[i, write_pos : write_pos+copy_len, :] = txt_feat_i[:, :copy_len, :]
-                        #     #h_inspect = h[i]
-                        #     write_pos += copy_len
-                        
-                        ### pad the rest of the sequence
-                        remain = sequence_length - write_pos
-                        if remain > 0:
-                            h[h_write_pos, write_pos : write_pos+remain, :] = pad_embedding
-                            h_inspect = h[h_write_pos]
-                            ### Pad - ttid + attn_mask
-                            ttids[h_write_pos, write_pos : write_pos+remain] = 0
-                            attn_masks_modified[h_write_pos, write_pos : write_pos+remain] = 0
-                            
-                            write_pos += remain
-
-
-
-                        h_write_pos += 1
-
-                        if option in batch_metadata[batch_idx]['positive_option']:
-                            gt_for_batch[batch_idx].append(1)
-                        else:
-                            gt_for_batch[batch_idx].append(0)
-
-
-      
-                # L2 + L2 questions
-                else:
-                    write_pos = 0
-                    ### CLS token
-                    h[h_write_pos, write_pos : write_pos+1, :] = cls_tokens_for_batch
-                    h_inspect = h[h_write_pos]
-                    ### CLS token - attn mask
-                    ttids[h_write_pos, write_pos : write_pos + 1] = 1
-                    attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1
-                    
-                    write_pos += 1
-
-                    ### Path Image Features
-                    img_feat_len = image_tokens_for_batch.size(1)
-                    # How many image tokens can we still fit?
-                    remain = sequence_length - write_pos
-                    copy_len = min(img_feat_len, remain)
-                    if copy_len > 0:
-                        # We slice both sides:
-                        #   - source: img_feat_i[:, :copy_len, :] → (1, copy_len, D)
-                        #   - destination: h[i, write_pos : write_pos+copy_len, :]
-                        h[h_write_pos, write_pos : write_pos+copy_len, :] = image_tokens_for_batch[:, :copy_len, :]
-                        h_inspect = h[h_write_pos]
-                        ### Patch Image Features - ttid + attn_mask
-                        ttids[h_write_pos, write_pos : write_pos+copy_len] = 4
-                        attn_masks_modified[h_write_pos, write_pos : write_pos+copy_len] = 1
-                        
-                        write_pos += copy_len
-
-                    # SEP embedding
-                    h[h_write_pos, write_pos : write_pos+1, :] = seperator_embedding
-                    h_inspect = h[h_write_pos]
-                    ### SEP embedding - ttid + attn_mask
-                    ttids[h_write_pos, write_pos : write_pos + 1] = 4
-                    attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1                          
-                    
-                    write_pos += 1
-
-                    ### Global input image embedding
-                    h[h_write_pos, write_pos : write_pos+1, :] = global_image_embedding
-                    h_inspect = h[h_write_pos]
-                    ### Global input image embedding - ttid + attn_mask
-                    ttids[h_write_pos, write_pos : write_pos + 1] = 6
-                    attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1                    
-                    
-                    write_pos += 1
-
-                    # SEP embedding
-                    h[h_write_pos, write_pos : write_pos+1, :] = seperator_embedding
-                    h_inspect = h[h_write_pos]
-                    ### SEP embedding - ttid + attn_mask
-                    ttids[h_write_pos, write_pos : write_pos + 1] = 6
-                    attn_masks_modified[h_write_pos, write_pos : write_pos + 1] = 1  
-                    write_pos += 1
-
-                    ## Knowledge image embedding
-                    knowledge_global_embedding = kb_example_embeddings[option]
-                    know_len = knowledge_global_embedding.size(1)
-                    remain = sequence_length - write_pos
-                    copy_len = min(know_len, remain)
-                    if copy_len > 0:
-                        h[h_write_pos, write_pos : write_pos+copy_len, :] = knowledge_global_embedding
-                        h_inspect = h[h_write_pos]
-                        ### Knowledge image embedding - ttid + attn_mask
-                        ttids[h_write_pos, write_pos : write_pos+copy_len] = 6
-                        attn_masks_modified[h_write_pos, write_pos : write_pos+copy_len] = 1                        
-                        
-                        write_pos += copy_len
-
-                    
-                    ### Question features
-                    # txt_feat_i = text_features[i : i+1, 1:num_qa_tokens]  # (1, T-1, D)
-                    # #inspct_txt_feat = text_features[i]
-                    # #inspct_txt_feat2 = text_features[i : i + 1, 1:num_qa_tokens]
-                    # #inspct_txt_feat3 = text_features[i : i + 1, 1:num_qa_tokens, 0:5]
-                    # txt_len = txt_feat_i.size(1)
-                    # remain = sequence_length - write_pos
-                    # copy_len = min(txt_len, remain)
-                    # if copy_len > 0:
-                    #     h[i, write_pos : write_pos+copy_len, :] = txt_feat_i[:, :copy_len, :]
-                    #     #h_inspect = h[i]
-                    #     write_pos += copy_len
-                    
-                    ### pad the rest of the sequence
-                    remain = sequence_length - write_pos
-                    if remain > 0:
-                        h[h_write_pos, write_pos : write_pos+remain, :] = pad_embedding
-                        h_inspect = h[h_write_pos]
-                        ### Pad - ttid + attn_mask
-                        ttids[h_write_pos, write_pos : write_pos+remain] = 0
-                        attn_masks_modified[h_write_pos, write_pos : write_pos+remain] = 0
-
-                        write_pos += remain
-
-                    h_write_pos += 1
-
-                    if option in batch_metadata[batch_idx]['positive_option']:
-                        gt_for_batch[batch_idx].append(1)
-                    else:
-                        gt_for_batch[batch_idx].append(0)
-
-
-
-        # gt_labels is a list of lists or similar iterable
-        # Example: gt_labels = [[0, 1], [2, 3, 4], [5]]
-        # or gt_labels = torch.tensor([[0, 1], [2, 3, 4], [5]]) if already a tensor
-        gt_for_batch = torch.cat([torch.tensor(lst, dtype=torch.float32) if not isinstance(lst, torch.Tensor) else lst.float() for lst in gt_for_batch]).unsqueeze(1)
-        return h, ttids, attn_masks_modified, gt_for_batch
-        
-    
-    def generate_tokentypeid_attnmask_forbatch_bbc(
-    self,
-    sequence,            # [batch_size, seq_len]
-    token_type_ids_q,    # [batch_size, seq_len]  (we’ll slice out of this)
-    image_features,      # [batch_size, num_image_feats, ...]  (we only need num_image_feats)
-    attn_mask,           # [batch_size, seq_len], dtype long with 0/1
-):
-        """
-        Returns:
-        token_type_ids:        [batch_size, seq_len] with the desired marks
-        modified_attention_mask: [batch_size, seq_len] (0/1) extended by positive-KB length
-        """
-
-        device = sequence.device
-        batch_size = sequence.size(0)
-        seq_len = sequence.size(1)
-        num_image_feats = image_features.size(1)   # e.g. 196
-
-        # ---------------------------------------------------
-        # 1) PRE-ALLOCATE or RE-USE buffers instead of torch.zeros(...) every time.
-        #    Here we store them as attributes so future calls will re-use the same memory:
-        if not hasattr(self, "_ttids_buffer") or self._ttids_buffer.size() != (batch_size, seq_len):
-            # If it doesn’t exist yet, allocate it once:
-            self._ttids_buffer = torch.zeros(
-                batch_size, seq_len, dtype=torch.long, device=device
-            )
-            self._mask_buffer = torch.zeros(
-                batch_size, seq_len, dtype=torch.long, device=device
-            )
-
-        token_type_ids = self._ttids_buffer
-        modified_attention_mask = self._mask_buffer
-
-        # Zero them out in-place (no new allocation):
-        token_type_ids.fill_(0)
-        modified_attention_mask.fill_(0)
-
-        # ---------------------------------------------------
-        # 2) Convert knowledge_ttid (list of Python lists or numpy arrays) into
-        #    a list of LongTensors on the correct device, ONCE.
-        #    If they’re already tensors on the right device, skip this step.
-        knowledge_ttid_tensors = []
-        for idx in range(batch_size):
-            t = knowledge_ttid[idx]
-            if isinstance(t, torch.Tensor):
-                # Make sure it’s long & on the right device
-                knowledge_ttid_tensors.append(t.long().to(device))
-            else:
-                # If it’s a Python list or numpy array, convert once:
-                knowledge_ttid_tensors.append(torch.LongTensor(t).to(device))
-
-        # ---------------------------------------------------
-        # 3) Fill in the “CLS token” (index 0) and “image features” (indices 1..num_image_feats)
-        #    in *one* vectorized step across all examples:
-        #
-        #   token_type_ids[:, 0] = 1       # CLS
-        #   token_type_ids[:, 1 : 1 + num_image_feats] = 4  # image-features
-        #
-        #   These two lines allocate no new memory; they simply write into our pre-allocated buffer.
-        token_type_ids[:, 0] = 1 # CLS token
-        token_type_ids[:, 1 : 1 + num_image_feats] = 4 # image patch features
-        token_type_ids[:, 1 + num_image_feats : 1 + 1 + num_image_feats] = 4 ######## sep token
-        token_type_ids[:, 1 + 1 + num_image_feats :  1 + 1 + 1 + num_image_feats] = 6 ## global image embedding
-        token_type_ids[:, 1 + 1 + 1 + num_image_feats :  1 + 1 + 1 + 1 + num_image_feats] = 6 ## sep token
-
-        # [CLS][IMAGE_PATCH_FEATURES][SEP][IMAGEGLOBAL_EMBEDDING][SEP][KNOWLEDGE-includes sep at end][Q/A]
-
-        # ---------------------------------------------------
-        # 4) Handle variable-length “knowledge” slices.
-        #    We must do a short Python loop, because each example i might have a different K_i length.
-        #
-        #    For each example idx:
-        #       start_i = 1 + num_image_feats
-        #       end_i   = start_i + K_i
-        #       token_type_ids[idx, start_i : end_i] = knowledge_ttid_tensors[idx]
-        #       Then text_start_i = end_i, and we copy from token_type_ids_q[idx, 1 : 1 + (seq_len - end_i)]
-        #       into token_type_ids[idx, end_i : ]
-        #
-        # We also build a small Python list of knowledge_lengths, so we can do the new attention-mask vectorization later.
-        knowledge_lengths = [ks.size(0) for ks in knowledge_sequence]
-        #knowledge_lengths = [k_len + 3 for k_len in knowledge_lengths] # 3 extra tokens (sep, global_embed, sep)
-        for idx in range(batch_size):
-            Ki = knowledge_lengths[idx]
-            start_i = 4 + num_image_feats ############# 3 (sep, global_embed, sep) because of sep token added at 1024
-            end_i = start_i + Ki
-
-            # 4.1) Assign the “positive KB example” token-type IDs from the pre-converted tensor:
-            token_type_ids[idx, start_i : end_i] = knowledge_ttid_tensors[idx]
-
-            # 4.2) Compute how many leftover “text positions” remain in this sequence:
-            #      We assume `self.args.max_position_embeddings` equals seq_len here.
-            #      So `remaining_i = seq_len - end_i`.
-            remaining_i = seq_len - end_i #### +1 becuase of sep
-            if remaining_i > 0:
-                # Copy from token_type_ids_q[idx, 1:1 + remaining_i] into token_type_ids[idx, end_i:]
-                token_type_ids[idx, end_i : end_i + remaining_i] = token_type_ids_q[
-                    idx, 1 : 1 + remaining_i
-                ]
-
-        # ---------------------------------------------------
-        # 5) Build modified_attention_mask in a vectorized way.
-        #    Original code did, for each idx:
-        #        attn_mask_items = (attn_mask[idx] == 1).sum().item()
-        #        modified_attention_mask[idx, 0 : attn_mask_items + Ki] = 1
-        #
-        #    Instead, we:
-        #      (a) compute attn_mask_items_per_example = attn_mask.sum(dim=1) -> [batch_size]
-        #      (b) compute thresholds = attn_mask_items_per_example + knowledge_lengths
-        #          (convert knowledge_lengths list → a tensor on the same device)
-        #      (c) build a row-vector `positions = torch.arange(seq_len, device=device)`
-        #      (d) compare `positions.unsqueeze(0) < thresholds.unsqueeze(1)` → a [batch_size, seq_len] boolean mask
-        #
-        #    That single boolean mask covers all rows in one shot:
-        with torch.no_grad():
-            # (a) how many of the original tokens are “active” (==1) in attn_mask, per example:
-            attn_counts = (attn_mask == 1).sum(dim=1)          # shape: [batch_size]
-
-            # (b) add corresponding knowledge_lengths:
-            #    convert knowledge_lengths list into a LongTensor on `device`
-            knowledge_lengths = [k_len + 3 for k_len in knowledge_lengths] ################### + 3 because of the 3 extra tokens added to the sequence - sep , global embed, sep
-            kl_tensor = torch.LongTensor(knowledge_lengths).to(device)
-            thresholds = attn_counts + kl_tensor            # shape: [batch_size]
-
-            # (c) build positions = [0, 1, 2, ..., seq_len-1] want shape [1, seq_len]
-            positions = torch.arange(seq_len, device=device).unsqueeze(0)  # [1, seq_len]
-
-            # (d) each row i: mark 1 for positions < thresholds[i]
-            #     This comparison returns a boolean Tensor [batch_size, seq_len]
-            mask_bool = positions < thresholds.unsqueeze(1)  # [batch_size, seq_len]
-
-            # Write it into our preallocated `modified_attention_mask` (long dtype 0/1):
-            modified_attention_mask.copy_(mask_bool.long())
-            
-        knowledge_ttid_tensors.clear()
-
-        return token_type_ids, modified_attention_mask
-    
-
-    def generate_tokentypeid_attnmask_forbatch_fix(
-    self,
-    sequence,            # [batch_size, seq_len]
-    token_type_ids_q,    # [batch_size, seq_len]  (we’ll slice out of this)
-    image_features,      # [batch_size, num_image_feats, ...]  (we only need num_image_feats)
-    knowledge_sequence,  # list of length batch_size; each entry is a Tensor [K_i, ...]
-    attn_mask,           # [batch_size, seq_len], dtype long with 0/1
-    knowledge_ttid       # list of length batch_size; each is list or 1D array of length K_i
-):
-        """
-        Returns:
-        token_type_ids:        [batch_size, seq_len] with the desired marks
-        modified_attention_mask: [batch_size, seq_len] (0/1) extended by positive-KB length
-        """
-
-        device = sequence.device
-        batch_size = sequence.size(0)
-        seq_len = sequence.size(1)
-        num_image_feats = image_features.size(1)   # e.g. 196
-
-        # ---------------------------------------------------
-        # 1) PRE-ALLOCATE or RE-USE buffers instead of torch.zeros(...) every time.
-        #    Here we store them as attributes so future calls will re-use the same memory:
-        if not hasattr(self, "_ttids_buffer") or self._ttids_buffer.size() != (batch_size, seq_len):
-            # If it doesn’t exist yet, allocate it once:
-            self._ttids_buffer = torch.zeros(
-                batch_size, seq_len, dtype=torch.long, device=device
-            )
-            self._mask_buffer = torch.zeros(
-                batch_size, seq_len, dtype=torch.long, device=device
-            )
-
-        token_type_ids = self._ttids_buffer
-        modified_attention_mask = self._mask_buffer
-
-        # Zero them out in-place (no new allocation):
-        token_type_ids.fill_(0)
-        modified_attention_mask.fill_(0)
-
-        # ---------------------------------------------------
-        # 2) Convert knowledge_ttid (list of Python lists or numpy arrays) into
-        #    a list of LongTensors on the correct device, ONCE.
-        #    If they’re already tensors on the right device, skip this step.
-        knowledge_ttid_tensors = []
-        for idx in range(batch_size):
-            t = knowledge_ttid[idx]
-            if isinstance(t, torch.Tensor):
-                # Make sure it’s long & on the right device
-                knowledge_ttid_tensors.append(t.long().to(device))
-            else:
-                # If it’s a Python list or numpy array, convert once:
-                knowledge_ttid_tensors.append(torch.LongTensor(t).to(device))
-
-        # ---------------------------------------------------
-        # 3) Fill in the “CLS token” (index 0) and “image features” (indices 1..num_image_feats)
-        #    in *one* vectorized step across all examples:
-        #
-        #   token_type_ids[:, 0] = 1       # CLS
-        #   token_type_ids[:, 1 : 1 + num_image_feats] = 4  # image-features
-        #
-        #   These two lines allocate no new memory; they simply write into our pre-allocated buffer.
-        token_type_ids[:, 0] = 1 # CLS token
-        token_type_ids[:, 1 : 1 + num_image_feats] = 4 # image patch features
-        token_type_ids[:, 1 + num_image_feats : 1 + 1 + num_image_feats] = 4 ######## sep token
-        token_type_ids[:, 1 + 1 + num_image_feats :  1 + 1 + 1 + num_image_feats] = 6 ## global image embedding
-        token_type_ids[:, 1 + 1 + 1 + num_image_feats :  1 + 1 + 1 + 1 + num_image_feats] = 6 ## sep token
-
-        # [CLS][IMAGE_PATCH_FEATURES][SEP][IMAGEGLOBAL_EMBEDDING][SEP][KNOWLEDGE-includes sep at end][Q/A]
-
-        # ---------------------------------------------------
-        # 4) Handle variable-length “knowledge” slices.
-        #    We must do a short Python loop, because each example i might have a different K_i length.
-        #
-        #    For each example idx:
-        #       start_i = 1 + num_image_feats
-        #       end_i   = start_i + K_i
-        #       token_type_ids[idx, start_i : end_i] = knowledge_ttid_tensors[idx]
-        #       Then text_start_i = end_i, and we copy from token_type_ids_q[idx, 1 : 1 + (seq_len - end_i)]
-        #       into token_type_ids[idx, end_i : ]
-        #
-        # We also build a small Python list of knowledge_lengths, so we can do the new attention-mask vectorization later.
-        knowledge_lengths = [ks.size(0) for ks in knowledge_sequence]
-        #knowledge_lengths = [k_len + 3 for k_len in knowledge_lengths] # 3 extra tokens (sep, global_embed, sep)
-        for idx in range(batch_size):
-            Ki = knowledge_lengths[idx]
-            start_i = 4 + num_image_feats ############# 3 (sep, global_embed, sep) because of sep token added at 1024
-            end_i = start_i + Ki
-
-            # 4.1) Assign the “positive KB example” token-type IDs from the pre-converted tensor:
-            token_type_ids[idx, start_i : end_i] = knowledge_ttid_tensors[idx]
-
-            # 4.2) Compute how many leftover “text positions” remain in this sequence:
-            #      We assume `self.args.max_position_embeddings` equals seq_len here.
-            #      So `remaining_i = seq_len - end_i`.
-            remaining_i = seq_len - end_i #### +1 becuase of sep
-            if remaining_i > 0:
-                # Copy from token_type_ids_q[idx, 1:1 + remaining_i] into token_type_ids[idx, end_i:]
-                token_type_ids[idx, end_i : end_i + remaining_i] = token_type_ids_q[
-                    idx, 1 : 1 + remaining_i
-                ]
-
-        # ---------------------------------------------------
-        # 5) Build modified_attention_mask in a vectorized way.
-        #    Original code did, for each idx:
-        #        attn_mask_items = (attn_mask[idx] == 1).sum().item()
-        #        modified_attention_mask[idx, 0 : attn_mask_items + Ki] = 1
-        #
-        #    Instead, we:
-        #      (a) compute attn_mask_items_per_example = attn_mask.sum(dim=1) -> [batch_size]
-        #      (b) compute thresholds = attn_mask_items_per_example + knowledge_lengths
-        #          (convert knowledge_lengths list → a tensor on the same device)
-        #      (c) build a row-vector `positions = torch.arange(seq_len, device=device)`
-        #      (d) compare `positions.unsqueeze(0) < thresholds.unsqueeze(1)` → a [batch_size, seq_len] boolean mask
-        #
-        #    That single boolean mask covers all rows in one shot:
-        with torch.no_grad():
-            # (a) how many of the original tokens are “active” (==1) in attn_mask, per example:
-            attn_counts = (attn_mask == 1).sum(dim=1)          # shape: [batch_size]
-
-            # (b) add corresponding knowledge_lengths:
-            #    convert knowledge_lengths list into a LongTensor on `device`
-            knowledge_lengths = [k_len + 3 for k_len in knowledge_lengths] ################### + 3 because of the 3 extra tokens added to the sequence - sep , global embed, sep
-            kl_tensor = torch.LongTensor(knowledge_lengths).to(device)
-            thresholds = attn_counts + kl_tensor            # shape: [batch_size]
-
-            # (c) build positions = [0, 1, 2, ..., seq_len-1] want shape [1, seq_len]
-            positions = torch.arange(seq_len, device=device).unsqueeze(0)  # [1, seq_len]
-
-            # (d) each row i: mark 1 for positions < thresholds[i]
-            #     This comparison returns a boolean Tensor [batch_size, seq_len]
-            mask_bool = positions < thresholds.unsqueeze(1)  # [batch_size, seq_len]
-
-            # Write it into our preallocated `modified_attention_mask` (long dtype 0/1):
-            modified_attention_mask.copy_(mask_bool.long())
-            
-        knowledge_ttid_tensors.clear()
-
-        return token_type_ids, modified_attention_mask
-    
-
-
+   
 
 class ModelWrapperBBC(pl.LightningModule):
     def __init__(self, args, train_df=None, val_df=None):
@@ -1665,115 +586,52 @@ class ModelWrapperBBC(pl.LightningModule):
 
     ### NEW
     def training_step(self, batch, batch_idx, dataset="vqarad"):
-        if self.args.use_precomputed:
-            if "vqarad" in self.args.data_dir:
-                (img, global_embed), question_token, q_attention_mask, attn_mask, target, answer_type, token_type_ids_q = batch
-            else:
-                (img, global_embed), question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch
-        else:
-            if "vqarad" in self.args.data_dir:
-                img, question_token, q_attention_mask, attn_mask, target, answer_type, token_type_ids_q = batch
-            else:
-                img, question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch
+        return training_step(self, batch, batch_idx, dataset)
 
-        question_token = question_token.squeeze(1)
-        attn_mask = attn_mask.squeeze(1)
-        q_attention_mask = q_attention_mask.squeeze(1)
-
-        if self.args.use_precomputed:
-            out, gt_vectors, attentions = self((img, global_embed), question_token, q_attention_mask, attn_mask, token_type_ids_q, info, mode='train')
-        else:
-            out, gt_vectors, attentions  = self(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, info, mode='train')
-            
-        #print_mem(f"after {batch_idx}")
-        
-        
-        logits = out
-        gt_vectors = gt_vectors.to(device=logits.device).detach()
-        target = gt_vectors
-
-        if "vqarad" in self.args.data_dir:
-            pred = logits.softmax(1).argmax(1).detach()
-        else:  
-            pred = (logits.sigmoid().detach() > 0.5).detach().long()
-
-            self.train_soft_scores.append(logits.sigmoid().detach())
-
-        self.train_preds.append(pred)
-        self.train_targets.append(target)
-
-        if "vqarad" in self.args.data_dir:
-            self.train_answer_types.append(answer_type)
-        else:
-            self.train_infos.append(info)
-
-        loss = self.loss_fn(logits, target) # N x 1 per class loss
-        mean_loss = loss.mean() # a single scalar
-        #don't need for bbc
-        #loss = self.get_masked_loss(loss, mask, target, None)  # only use loss of occuring classes        
-
-        self.log('Loss/train', mean_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-
-        return mean_loss
-
-    ## NEW
-    # def validation_step(self, batch, batch_idx):
-    #     if self.args.use_precomputed:
-    #         if "vqarad" in self.args.data_dir:
-    #             (img, global_embedding), question_token, q_attention_mask, attn_mask, target, answer_type, token_type_ids_q = batch
-    #         else:
-    #             (img, global_embedding), question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch
-    #     else:
-    #         if "vqarad" in self.args.data_dir:
-    #             img, question_token, q_attention_mask, attn_mask, target, answer_type, token_type_ids_q = batch
-    #         else:
-    #             img, question_token, q_attention_mask, attn_mask, target, token_type_ids_q, info, mask = batch            
-
-    #     question_token = question_token.squeeze(1)
-    #     attn_mask = attn_mask.squeeze(1)
-    #     q_attention_mask = q_attention_mask.squeeze(1)
-    #     batch_info = batch[6]
-        
-    #     if self.args.use_precomputed:
-    #         out, gt_vectors, attentions = self((img, global_embedding), question_token, q_attention_mask, attn_mask, token_type_ids_q, batch_info, mode='val')
-    #     else:
-    #         out, gt_vectors, attentions = self(img, question_token, q_attention_mask, attn_mask, token_type_ids_q, batch_info, mode='val')
-
-    #     logits = out
-    #     gt_vectors = gt_vectors.to(device=logits.device).detach()
-    #     target = gt_vectors
-
-    #     if "vqarad" in self.args.data_dir:
-    #         pred = logits.softmax(1).argmax(1).detach()
-    #         self.val_soft_scores.append(logits.softmax(1).detach())
-    #     else:  # multi-label classification
-    #         pred = (logits.sigmoid().detach() > 0.5).detach().long()
-    #         self.val_soft_scores.append(logits.sigmoid().detach())
-
-    #     self.val_preds.append(pred)
-    #     self.val_targets.append(target)
-    #     if "vqarad" in self.args.data_dir:
-    #         self.val_answer_types.append(answer_type)
-    #     else:
-    #         self.val_infos.append(info)
-
-    #     if "vqarad" in self.args.data_dir:
-    #         val_loss = self.loss_fn(logits[target != -1], target[target != -1])
-    #     else:
-    #         val_loss = self.loss_fn(logits, target)
-    #         # only use loss of occuring classes --- not relevant for bbc
-    #         # if "radrestruct" in self.args.data_dir:
-    #         #     val_loss = self.get_masked_loss(val_loss, mask, target, None)
-    #     mean_val_loss = val_loss.mean()
-    #     self.log('Loss/val', mean_val_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-    #     return mean_val_loss
+    # NEW
+    def validation_step(self, batch, batch_idx):
+        return validation_step(self, batch, batch_idx)
 
     ### Original
     def configure_optimizers(self):
+        # real training numbers
+        #total_steps = ((165002 * 3) / self.args.batch_size) * self.args.epochs
+        #overfit
         
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.lr)
         return optimizer
+    
+    # from scratch bbc fusion
+    # def configure_optimizers(self):
+    #     # real training numbers
+    #     #total_steps = ((165002 * 3) / self.args.batch_size) * self.args.epochs
+    #     #overfit
+        
+    #     lr = 5e-4
+    #     weight_decay = 0.01
+    #     batch_size = 32
+    #     max_epochs = 5
+    #     warmup_ratio = 0.1
+    #     scheduler_type = "linear"  # or "cosine"
+        
+    #     total_training_steps  = ((8 * 3) / self.args.batch_size) * self.args.epochs
+    #     warmup_steps = int(warmup_ratio * total_training_steps)
+        
+    #     optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.lr, weight_decay=weight_decay)
+    #     scheduler = get_scheduler(
+    #         name=scheduler_type,  # 'linear', 'cosine', etc.
+    #         optimizer=optimizer,
+    #         num_warmup_steps=warmup_steps,
+    #         num_training_steps=total_training_steps,
+    #     )
+    #     return {
+    #         "optimizer": optimizer,
+    #         "lr_scheduler": {
+    #             "scheduler": scheduler,
+    #             "interval": "step",  # important! because scheduler.step() is called every step
+    #             "frequency": 1,
+    #         },
+    #     }
     
     ## Steady decrease in LR
     # def configure_optimizers(self):
@@ -1792,13 +650,13 @@ class ModelWrapperBBC(pl.LightningModule):
     #         "name": "linear_lr"
     #     }]
     
-    ### New
+    # ### New
     # def configure_optimizers(self):
     #     optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.lr)
     #     #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=8, gamma=0.7)
     #     scheduler = {
-    #         'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5, min_lr=1e-6),
-    #         'monitor': 'Loss/train',  # or 'val_loss' if you're using validation
+    #         'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=10, factor=0.5, min_lr=1e-6),
+    #         'monitor': 'loss',  # or 'val_loss' if you're using validation
     #         'interval': 'epoch',
     #         'frequency': 1
     #     }
@@ -1811,51 +669,7 @@ class ModelWrapperBBC(pl.LightningModule):
 
         # Implementation for PyTorch Lightning < 2.0
     def training_epoch_end(self, outputs):
-        # Concatenate predictions and targets from all batches
-        preds = torch.cat(self.train_preds, dim=0)
-        targets = torch.cat(self.train_targets, dim=0)
-        
-        # For binary classification, targets may be float, so ensure type match
-        # If multiclass, ensure argmax etc. (already done in training_step)
-        # If targets are one-hot or probabilities, you may need to convert
-
-        if "vqarad" in self.args.data_dir:
-            # Multiclass classification
-            correct = (preds == targets).sum().item()
-            total = targets.numel()
-            accuracy = correct / total
-            self.log('Accuracy/train', accuracy, on_epoch=True, prog_bar=True, logger=True)
-            # Add more metrics here if needed (F1, etc.)
-        else:
-            # Binary classification (multi-label)
-            # Often want to calculate metrics per label or overall
-            # Example: simple accuracy (all labels correct)
-            correct = (preds == targets).float().sum()
-            total = torch.numel(targets)
-            accuracy = correct / total
-            self.log('Accuracy/train', accuracy, on_epoch=True, prog_bar=True, logger=True)
-            # You might want to use sklearn.metrics for F1, precision, recall, etc.
-            # with torch -> numpy conversion if needed
-
-        # Optionally: log more detailed metrics (F1, confusion matrix, etc.)
-
-        # Clear out your lists so they don't grow across epochs!
-        self.train_preds = []
-        self.train_targets = []
-        if hasattr(self, "train_answer_types"):
-            self.train_answer_types = []
-        if hasattr(self, "train_infos"):
-            self.train_infos = []
-        if hasattr(self, "train_soft_scores"):
-            self.train_soft_scores = []
-
-        self.train_preds = []
-        self.train_targets = []
-        self.train_soft_scores = []
-        self.train_infos = []
-        self.train_answer_types = []
-        self.train_gen_labels = []
-        self.train_gen_preds = []
+        training_epoch_end(self,outputs)
 
         # Optionally return something, but usually unnecessary
         # return {'accuracy': accuracy}
@@ -1881,46 +695,7 @@ class ModelWrapperBBC(pl.LightningModule):
     
 
     def validation_epoch_end(self, outputs):
-        # Concatenate all predictions and targets for the epoch
-        preds = torch.cat(self.val_preds, dim=0)
-        targets = torch.cat(self.val_targets, dim=0)
-
-        if "vqarad" in self.args.data_dir:
-            correct = (preds == targets).sum().item()
-            total = targets.numel()
-            accuracy = correct / total
-            self.log('Accuracy/val', accuracy, on_epoch=True, prog_bar=True, logger=True)
-        else:
-            correct = (preds == targets).float().sum()
-            total = torch.numel(targets)
-            accuracy = correct / total
-            self.log('Accuracy/val', accuracy, on_epoch=True, prog_bar=True, logger=True)
-
-        # Optionally compute F1 score for both cases
-        try:
-            from sklearn.metrics import f1_score
-            f1 = f1_score(targets.cpu().numpy().reshape(-1), preds.cpu().numpy().reshape(-1), average='macro')
-            self.log('F1/val', f1, on_epoch=True, prog_bar=True, logger=True)
-        except ImportError:
-            pass  # sklearn not available, just skip
-
-        # Reset lists for next epoch
-        self.val_preds = []
-        self.val_targets = []
-        if hasattr(self, "val_soft_scores"):
-            self.val_soft_scores = []
-        if hasattr(self, "val_answer_types"):
-            self.val_answer_types = []
-        if hasattr(self, "val_infos"):
-            self.val_infos = []
-
-        self.val_preds = []
-        self.val_targets = []
-        self.val_soft_scores = []
-        self.val_answer_types = []
-        self.val_gen_labels = []
-        self.val_gen_preds = []
-        self.val_infos = []
+        validation_epoch_end(self, outputs)
 
 
 

@@ -100,6 +100,7 @@ if __name__ == '__main__':
     parser.add_argument('--initialize_kb', action='store_true', default=False, help="is the KB actually being loaded into memory")
     parser.add_argument('--kb_dir', type=str, required=False, default=None, help="the path to the knowledge base index file")
     parser.add_argument('--use_kb_adapter', action='store_true', default=False, help="use the bbc kb adapter")
+    parser.add_argument('--pretrained_kb_adapter', action='store_true', default=False, help="use the bbc kb adapter")
     parser.add_argument('--kb_adapter_dir', type=str, required=False, default=None, help="the path to the knowledge base bbc adapter model")
     ## Freezing parts of the model
     parser.add_argument('--freeze_image_encoder', action='store_true', default=False, help="freeze the image encoder so its weights don't get updated")
@@ -192,6 +193,31 @@ if __name__ == '__main__':
     #     for param in model.model.bbc_classifier.parameters():
     #         param.requires_grad = False
     #     print(f"{timestamp()}The BBC classifier has been frozen")
+    if args.use_kb_adapter:
+        if args.pretrained_kb_adapter:
+            print(f"{timestamp()}Loading BBC model from checkpoint: {args.kb_adapter_dir}")
+
+            checkpoint = torch.load(args.kb_adapter_dir, map_location=torch.device('cpu'))
+            full_state_dict = checkpoint['state_dict']
+
+            bbc_classifier_state_dict = OrderedDict()
+            for k, v in full_state_dict.items():
+
+                if k.startswith('model.bbc_simple_ffn.'):
+                    # Remove the 'image_encoder.' prefix
+                    new_key = k.replace('model.bbc_simple_ffn.', '')
+                    bbc_classifier_state_dict[new_key] = v
+
+
+            print(f"\n {timestamp()}Attempting to load state_dict into simple bbc bbc classifier...")
+            missing_keys, unexpected_keys = model.model.bbc_simple_ffn.load_state_dict(bbc_classifier_state_dict)
+
+            assert len(missing_keys) == 0
+            assert len(unexpected_keys) == 0
+
+            for param in model.model.bbc_simple_ffn.parameters():
+                param.requires_grad = False
+            print(f"{timestamp()}The BBC classifier has been frozen")
         
     if args.freeze_image_encoder:
         for param in model.model.image_encoder.parameters():

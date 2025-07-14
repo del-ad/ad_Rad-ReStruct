@@ -99,6 +99,7 @@ if __name__ == '__main__':
     parser.add_argument('--kb_dir', type=str, required=False, default=None, help="the path to the knowledge base index file")
     parser.add_argument('--use_kb_adapter', action='store_true', default=False, help="use the bbc kb adapter")
     parser.add_argument('--kb_adapter_dir', type=str, required=False, default=None, help="the path to the knowledge base bbc adapter model")
+    parser.add_argument('--use_simple_classifier', action='store_true', default=False, help="use simple FFN as classifier")
     ## Freezing parts of the model
     parser.add_argument('--freeze_image_encoder', action='store_true', default=False, help="freeze the image encoder so its weights don't get updated")
     parser.add_argument('--freeze_question_encoder', action='store_true', default=False, help="freeze the question encoder so its weights don't get updated")
@@ -126,6 +127,9 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     model = ModelWrapperBBC(args)
+    
+    print(f"{timestamp()} ==================================================================")
+    print(f"{timestamp()} Using the forward() defined in: {model.model.get_forward_origin()}")
     # move the missing knowledge embedding from the image encoder to the gpu
     model.model.image_encoder.missing_knowledge_embedding = model.model.image_encoder.missing_knowledge_embedding.to(device=device)
 
@@ -282,9 +286,12 @@ if __name__ == '__main__':
 
     #logger = pl.loggers.TensorBoardLogger('runs_radrestruct', name=args.run_name, version=0)
     logger = WandbLogger(project='train_radrestruct', name=args.run_name, config=args)
-    ### Original
-    checkpoint_callback = ModelCheckpoint(monitor='F1/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{F1/val:.2f}',
-                                          mode='max', every_n_epochs=1, save_last=True)
+    ### Original - monitors F1 val
+    checkpoint_callback = ModelCheckpoint(monitor='Loss/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{Loss/val:.2f}',
+                                          mode='min', every_n_epochs=1, save_last=True)
+    
+    # checkpoint_callback = ModelCheckpoint(monitor='Loss/val', dirpath=os.path.join(args.save_dir, args.run_name), filename='{epoch}-{Loss/val:.2f}',
+    #                                       mode='min', every_n_epochs=1, save_last=True)
     ### New - Overfitting tests
     #checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(args.save_dir, args.run_name), filename='last-epoch-{epoch}', save_last=True)
 
